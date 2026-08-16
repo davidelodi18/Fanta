@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Asta — assistente fantacalcio Classic</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Instrument+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#EDF0EC; --surface:#FFFFFF; --surface2:#F6F8F5;
+  --ink:#16222B; --muted:#6B7A83; --line:#D7DDD6;
+  --petrol:#0F4C5C; --gold:#D99A0B; --gold-deep:#A8700A;
+  --P:#E07B39; --D:#2E9E5B; --C:#2F6FD0; --A:#CF3327;
+  --ok:#2E9E5B; --warn:#CF3327;
+  --r:10px;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--ink);
+  font-family:'Instrument Sans',system-ui,sans-serif;
+  font-size:15px; line-height:1.45;
+  -webkit-text-size-adjust:100%;
+  padding-bottom:env(safe-area-inset-bottom);
+}
+h1,h2,h3{font-family:'Bricolage Grotesque',system-ui,sans-serif;font-weight:800;margin:0;letter-spacing:-0.02em}
+button{font-family:inherit;font-size:inherit;cursor:pointer}
+input,select{font-family:inherit;font-size:inherit;color:var(--ink)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ---------- shell ---------- */
+.app{max-width:1120px;margin:0 auto;padding:0 12px 90px}
+header.top{
+  position:sticky;top:0;z-index:30;background:var(--petrol);color:#EAF2F2;
+  margin:0 -12px 12px;padding:10px 14px 0;
+}
+.top-row{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.brand{font-family:'Bricolage Grotesque';font-weight:800;font-size:20px;letter-spacing:-0.03em;color:#fff}
+.brand em{font-style:normal;color:var(--gold)}
+.brand-sub{font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:#8FB2B8}
+.top-stats{margin-left:auto;display:flex;gap:14px}
+.tstat{text-align:right;line-height:1.1}
+.tstat b{font-family:var(--mono);font-size:17px;display:block;color:#fff}
+.tstat span{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#8FB2B8}
+nav.tabs{display:flex;gap:2px;margin-top:10px;overflow-x:auto}
+nav.tabs button{
+  background:transparent;border:0;color:#8FB2B8;padding:9px 13px;border-radius:8px 8px 0 0;
+  font-weight:600;font-size:13px;white-space:nowrap;border-bottom:3px solid transparent
+}
+nav.tabs button[data-on="1"]{background:var(--bg);color:var(--ink);border-bottom-color:var(--gold)}
+
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:12px}
+.card > h2{font-size:15px;margin-bottom:2px}
+.hint{color:var(--muted);font-size:12.5px;margin:2px 0 10px}
+.grid{display:grid;gap:10px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+@media(max-width:640px){.g4{grid-template-columns:repeat(2,1fr)}}
+
+label.f{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:3px;font-weight:600}
+input.f,select.f{width:100%;padding:8px 9px;border:1px solid var(--line);border-radius:8px;background:var(--surface2)}
+input.f:focus,select.f:focus{outline:2px solid var(--petrol);outline-offset:1px}
+input.f.num{font-family:var(--mono)}
+
+.btn{background:var(--petrol);color:#fff;border:0;padding:9px 14px;border-radius:8px;font-weight:600}
+.btn.ghost{background:transparent;color:var(--petrol);border:1px solid var(--line)}
+.btn.gold{background:var(--gold);color:#2A1E00}
+.btn.sm{padding:5px 9px;font-size:12.5px;border-radius:7px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+.tag{font-family:var(--mono);font-size:11px;font-weight:600;color:#fff;width:19px;height:19px;
+  display:inline-flex;align-items:center;justify-content:center;border-radius:5px;flex:none}
+.tag.P{background:var(--P)}.tag.D{background:var(--D)}.tag.C{background:var(--C)}.tag.A{background:var(--A)}
+
+/* ---------- table ---------- */
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--line);border-radius:var(--r);background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th{position:sticky;top:0;background:var(--surface2);text-align:left;font-size:10.5px;text-transform:uppercase;
+  letter-spacing:.07em;color:var(--muted);padding:8px 8px;border-bottom:1px solid var(--line);white-space:nowrap;z-index:2}
+th.s{cursor:pointer;user-select:none}
+td{padding:6px 8px;border-bottom:1px solid #EDF0EB;white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tr[data-gone="1"] td{opacity:.38}
+tr[data-mine="1"]{background:#F0F8F2}
+td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.pname{font-weight:600}
+.pteam{color:var(--muted);font-size:11.5px;text-transform:uppercase;letter-spacing:.04em}
+.price{font-family:var(--mono);font-weight:600;color:var(--gold-deep);text-align:right}
+.cellinput{width:52px;padding:3px 5px;border:1px solid var(--line);border-radius:6px;text-align:right;font-family:var(--mono);font-size:12.5px;background:var(--surface2)}
+.star{background:none;border:0;font-size:15px;line-height:1;padding:2px 4px;color:#C9D0C8}
+.star[data-on="1"]{color:var(--gold)}
+
+.fas{font-family:var(--mono);font-size:11px;font-weight:600;padding:1px 5px;border-radius:5px;background:var(--surface2);border:1px solid var(--line)}
+.fas[data-t="1"]{background:#1B3A44;color:#fff;border-color:#1B3A44}
+.fas[data-t="2"]{background:#3E6B76;color:#fff;border-color:#3E6B76}
+.fas[data-t="3"]{background:#9FBAC0;color:#12232A;border-color:#9FBAC0}
+.fas[data-t="4"]{background:#DDE5E4;color:#3F5158;border-color:#D2DBDA}
+
+/* ---------- signature: max bid ---------- */
+.bidbox{background:var(--petrol);color:#EAF2F2;border-radius:var(--r);padding:16px;margin-bottom:12px}
+.bidhead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.bidname{font-family:'Bricolage Grotesque';font-weight:800;font-size:19px;color:#fff;letter-spacing:-.02em}
+.bidmeta{font-size:11.5px;color:#8FB2B8;text-transform:uppercase;letter-spacing:.09em}
+.bignum{font-family:var(--mono);font-weight:600;font-size:60px;line-height:.95;color:var(--gold);letter-spacing:-.03em}
+@media(max-width:420px){.bignum{font-size:48px}}
+.bignum small{font-size:16px;color:#8FB2B8;font-weight:400;letter-spacing:0}
+.bidgrid{display:flex;gap:20px;flex-wrap:wrap;margin-top:10px;padding-top:10px;border-top:1px solid #2C6070}
+.bidgrid div span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#8FB2B8}
+.bidgrid div b{font-family:var(--mono);font-size:16px;color:#fff;font-weight:500}
+.gauge{height:6px;background:#2C6070;border-radius:3px;margin-top:12px;position:relative;overflow:hidden}
+.gauge i{position:absolute;top:0;bottom:0;background:var(--gold);border-radius:3px;transition:all .35s ease}
+.gaugelab{display:flex;justify-content:space-between;font-size:10.5px;color:#8FB2B8;margin-top:5px;letter-spacing:.06em;text-transform:uppercase}
+
+/* depletion strip */
+.strip{display:flex;gap:3px;flex-wrap:wrap;margin-top:5px}
+.strip i{width:11px;height:16px;border-radius:2px;background:var(--petrol);opacity:.85}
+.strip i[data-gone="1"]{background:transparent;border:1px solid var(--line)}
+.striprow{display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px dashed var(--line)}
+.striprow:last-child{border-bottom:0}
+.striprow > b{font-family:var(--mono);font-size:12px;width:56px;color:var(--muted);flex:none}
+
+.teamchip{border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:var(--surface2);min-width:104px}
+.teamchip b{display:block;font-size:12.5px;overflow:hidden;text-overflow:ellipsis}
+.teamchip span{font-family:var(--mono);font-size:12px;color:var(--muted)}
+.teamchip[data-me="1"]{border-color:var(--petrol);background:#E8F1F0}
+.teamchip[data-low="1"] span{color:var(--warn)}
+
+.bar{height:8px;background:var(--surface2);border:1px solid var(--line);border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--petrol)}
+.bar i[data-over="1"]{background:var(--warn)}
+
+.sug{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;
+  max-height:250px;overflow-y:auto;z-index:20;box-shadow:0 8px 20px rgba(20,40,50,.13)}
+.sug button{display:flex;width:100%;gap:8px;align-items:center;text-align:left;background:none;border:0;padding:8px 10px;border-bottom:1px solid #EEF1ED}
+.sug button:hover,.sug button:focus{background:var(--surface2)}
+.banner{background:#FDF3E0;border:1px solid #EBD5A6;border-radius:var(--r);padding:9px 12px;font-size:12.5px;margin-bottom:12px}
+.empty{text-align:center;color:var(--muted);padding:26px 14px;font-size:13.5px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const {useState,useEffect,useMemo,useRef} = React;
+
+/* ============================== STORAGE ============================== */
+const KEY='fantasta_v1';
+const store={
+  async load(){
+    try{ if(window.storage){const r=await window.storage.get(KEY); return r?JSON.parse(r.value):null;} }catch(e){}
+    try{ const r=localStorage.getItem(KEY); return r?JSON.parse(r):null; }catch(e){ return null; }
+  },
+  async save(d){
+    const s=JSON.stringify(d);
+    try{ if(window.storage){ await window.storage.set(KEY,s); return; } }catch(e){}
+    try{ localStorage.setItem(KEY,s); }catch(e){}
+  }
+};
+
+/* ============================== DATI DEMO ============================== */
+/* Quotazioni e statistiche INDICATIVE, solo per provare l'app.
+   Carica il listone ufficiale (Quotazioni + Statistiche .xlsx) per lavorare sui numeri veri. */
+const DEMO=`Sommer|Inter|P|17|18|33|6.1|5.6
+Di Gregorio|Juventus|P|16|17|36|6.0|5.4
+Meret|Napoli|P|15|16|29|6.1|5.7
+Maignan|Milan|P|18|19|34|6.2|5.8
+Carnesecchi|Atalanta|P|16|17|35|6.1|5.7
+Svilar|Roma|P|17|18|36|6.3|6.0
+Provedel|Lazio|P|13|13|32|6.0|5.4
+De Gea|Fiorentina|P|14|15|35|6.1|5.6
+Skorupski|Bologna|P|13|13|33|6.0|5.4
+Butez|Como|P|11|11|32|5.9|5.2
+Milinkovic-Savic|Torino|P|13|13|36|6.1|5.6
+Okoye|Udinese|P|10|10|27|5.9|5.2
+Leali|Genoa|P|10|10|34|6.0|5.4
+Caprile|Cagliari|P|11|11|30|6.0|5.5
+Montipo|Verona|P|9|9|33|5.9|5.1
+Falcone|Lecce|P|10|10|35|5.9|5.2
+Suzuki|Parma|P|11|11|31|6.0|5.4
+Muric|Sassuolo|P|8|8|24|5.8|5.0
+Semper|Pisa|P|7|7|30|5.8|5.0
+Audero|Cremonese|P|7|7|28|5.8|5.0
+Bastoni|Inter|D|18|20|31|6.2|6.4
+Dimarco|Inter|D|22|26|30|6.4|7.0
+Dumfries|Inter|D|17|19|28|6.1|6.5
+Acerbi|Inter|D|11|11|24|6.0|6.1
+Bremer|Juventus|D|17|18|22|6.2|6.4
+Cambiaso|Juventus|D|15|16|29|6.1|6.4
+Kalulu|Juventus|D|12|12|30|6.0|6.1
+Theo Hernandez|Milan|D|21|23|31|6.1|6.6
+Tomori|Milan|D|13|13|28|6.0|6.2
+Pavlovic|Milan|D|11|11|26|5.9|6.1
+Di Lorenzo|Napoli|D|17|18|33|6.2|6.5
+Buongiorno|Napoli|D|14|14|24|6.1|6.3
+Rrahmani|Napoli|D|12|12|31|6.1|6.2
+Olivera|Napoli|D|10|10|26|5.9|6.0
+Bellanova|Atalanta|D|16|17|30|6.1|6.5
+Hien|Atalanta|D|11|11|29|6.0|6.1
+Zappacosta|Atalanta|D|12|12|25|6.0|6.3
+Angelino|Roma|D|18|20|30|6.1|6.6
+Ndicka|Roma|D|12|12|33|6.1|6.2
+Mancini|Roma|D|11|11|29|6.0|6.2
+Tavares|Lazio|D|17|18|27|6.0|6.5
+Romagnoli|Lazio|D|11|11|28|6.0|6.1
+Gila|Lazio|D|10|10|30|6.0|6.1
+Dodo|Fiorentina|D|13|13|31|6.0|6.3
+Ranieri|Fiorentina|D|10|10|32|6.0|6.2
+Gosens|Fiorentina|D|16|17|29|6.1|6.6
+Beukema|Bologna|D|11|11|33|6.0|6.2
+Lykogiannis|Bologna|D|9|9|24|5.9|6.0
+Posch|Bologna|D|9|9|25|5.9|6.0
+Moreno|Como|D|11|11|28|5.9|6.1
+Smolcic|Como|D|8|8|26|5.8|5.9
+Perrone|Como|D|9|9|30|5.9|6.0
+Vojvoda|Torino|D|9|9|29|5.9|6.0
+Coco|Torino|D|9|9|28|5.9|6.0
+Solet|Udinese|D|10|10|27|5.9|6.1
+Kabasele|Udinese|D|8|8|26|5.8|5.9
+Vasquez|Genoa|D|9|9|31|5.9|6.0
+Martin|Genoa|D|9|9|29|5.9|6.1
+Zappa|Cagliari|D|8|8|30|5.8|5.9
+Luperto|Cagliari|D|8|8|31|5.8|5.9
+Ghilardi|Verona|D|8|8|29|5.8|5.9
+Gaspar|Lecce|D|8|8|30|5.8|5.9
+Valenti|Parma|D|8|8|28|5.8|5.9
+Delprato|Parma|D|9|9|29|5.9|6.0
+Muharemovic|Sassuolo|D|7|7|22|5.8|5.9
+Caracciolo|Pisa|D|7|7|27|5.8|5.9
+Bianchetti|Cremonese|D|6|6|26|5.7|5.8
+Barella|Inter|C|24|28|31|6.4|6.9
+Calhanoglu|Inter|C|26|31|27|6.4|7.2
+Mkhitaryan|Inter|C|15|16|29|6.2|6.5
+Frattesi|Inter|C|14|15|28|6.0|6.5
+Yildiz|Juventus|C|29|36|32|6.4|7.4
+Locatelli|Juventus|C|13|13|33|6.1|6.3
+Thuram|Juventus|C|13|13|30|6.1|6.4
+McKennie|Juventus|C|13|13|31|6.0|6.4
+Pulisic|Milan|C|34|44|30|6.6|7.9
+Reijnders|Milan|C|26|31|34|6.4|7.1
+Fofana|Milan|C|13|13|30|6.1|6.4
+Loftus-Cheek|Milan|C|12|12|24|6.0|6.3
+McTominay|Napoli|C|30|38|33|6.5|7.5
+De Bruyne|Napoli|C|32|40|28|6.6|7.6
+Anguissa|Napoli|C|17|18|32|6.2|6.7
+Lobotka|Napoli|C|12|12|30|6.1|6.2
+Politano|Napoli|C|20|22|33|6.2|6.8
+Lookman|Atalanta|C|38|52|29|6.6|8.2
+De Ketelaere|Atalanta|C|27|33|30|6.4|7.3
+Ederson|Atalanta|C|15|16|31|6.2|6.5
+Pasalic|Atalanta|C|13|13|28|6.1|6.4
+Soule|Roma|C|22|26|31|6.2|6.9
+Dybala|Roma|C|28|34|22|6.4|7.4
+Cristante|Roma|C|11|11|33|6.0|6.2
+Koné|Roma|C|13|13|30|6.1|6.4
+Zaccagni|Lazio|C|25|29|29|6.3|7.0
+Guendouzi|Lazio|C|13|13|32|6.1|6.4
+Pedro|Lazio|C|17|18|27|6.1|6.7
+Kean|Fiorentina|A|36|48|32|6.5|8.4
+Gudmundsson|Fiorentina|C|22|26|27|6.2|6.9
+Fagioli|Fiorentina|C|12|12|26|6.0|6.2
+Orsolini|Bologna|C|29|36|33|6.4|7.5
+Ferguson|Bologna|C|18|19|26|6.1|6.7
+Odgaard|Bologna|C|16|17|30|6.1|6.6
+Freuler|Bologna|C|10|10|33|6.0|6.1
+Nico Paz|Como|C|30|38|32|6.4|7.5
+Da Cunha|Como|C|14|14|29|6.1|6.4
+Strefezza|Como|C|13|13|27|6.0|6.4
+Vlasic|Torino|C|17|18|28|6.1|6.6
+Ricci|Torino|C|12|12|30|6.0|6.3
+Thauvin|Udinese|C|24|28|31|6.3|7.0
+Ekkelenkamp|Udinese|C|13|13|29|6.0|6.4
+Malinovskyi|Genoa|C|19|20|28|6.1|6.7
+Frendrup|Genoa|C|10|10|34|6.0|6.2
+Viola|Cagliari|C|12|12|26|6.0|6.3
+Suzuki A.|Parma|C|13|13|25|6.0|6.4
+Bernabé|Parma|C|14|14|28|6.1|6.5
+Berardi|Sassuolo|C|26|31|24|6.3|7.1
+Laurienté|Sassuolo|C|18|19|27|6.1|6.7
+Tramoni|Pisa|C|13|13|28|6.0|6.4
+Vandeputte|Cremonese|C|12|12|30|6.0|6.3
+Thuram M.|Inter|A|38|54|30|6.5|8.5
+Lautaro Martinez|Inter|A|41|60|32|6.6|8.9
+Taremi|Inter|A|14|15|22|5.9|6.5
+Vlahovic|Juventus|A|30|38|31|6.2|7.8
+David|Juventus|A|32|42|30|6.3|8.0
+Openda|Juventus|A|20|22|27|6.0|7.0
+Leao|Milan|A|35|46|28|6.3|8.1
+Gimenez|Milan|A|26|31|29|6.1|7.4
+Nkunku|Milan|A|21|24|26|6.0|7.0
+Lucca|Napoli|A|22|26|30|6.0|7.1
+Hojlund|Napoli|A|27|33|29|6.1|7.5
+Neres|Napoli|A|24|28|31|6.2|7.2
+Retegui|Atalanta|A|39|56|32|6.4|8.6
+Scamacca|Atalanta|A|20|22|22|5.9|6.9
+Ferguson E.|Roma|A|21|24|27|6.0|7.0
+Dovbyk|Roma|A|24|28|30|6.0|7.2
+Castellanos|Lazio|A|23|27|29|6.1|7.2
+Dia|Lazio|A|18|19|27|6.0|6.8
+Piccoli|Fiorentina|A|19|20|30|6.0|6.9
+Castro|Bologna|A|22|26|31|6.0|7.1
+Dallinga|Bologna|A|16|17|24|5.9|6.6
+Douvikas|Como|A|20|22|29|6.0|7.0
+Morata|Como|A|18|19|26|5.9|6.8
+Adams|Torino|A|19|20|31|6.0|6.9
+Zaniolo|Udinese|A|17|18|27|5.9|6.7
+Colombo|Genoa|A|15|16|28|5.9|6.5
+Belotti|Cagliari|A|16|17|29|5.9|6.6
+Giovane|Verona|A|14|14|28|5.8|6.4
+Camarda|Lecce|A|16|17|26|5.9|6.6
+Pellegrino|Parma|A|17|18|30|5.9|6.7
+Pinamonti|Sassuolo|A|21|24|31|6.0|7.0
+Meister|Pisa|A|14|14|27|5.8|6.4
+Vardy|Cremonese|A|17|18|25|5.9|6.7`;
+
+const ROLES=['P','D','C','A'];
+const ROLENAME={P:'Portieri',D:'Difensori',C:'Centrocampisti',A:'Attaccanti'};
+const uid=()=>Math.random().toString(36).slice(2,9);
+
+function parseDemo(){
+  return DEMO.trim().split('\n').map(l=>{
+    const [nome,squadra,ruolo,qt,fvm,pv,mv,fm]=l.split('|');
+    return {id:uid(),nome,squadra,ruolo,qt:+qt,fvm:+fvm,pv:+pv,mv:+mv,fm:+fm,
+            rig:false,tgt:0,ovrFm:null,ovrPres:null,owner:null,paid:null};
+  });
+}
+
+const DEFCFG={
+  teams:['Io','Squadra 2','Squadra 3','Squadra 4','Squadra 5','Squadra 6','Squadra 7','Squadra 8'],
+  budget:500, slots:{P:3,D:8,C:8,A:6}, starters:{P:1,D:4,C:4,A:3}, rigBonus:0.4
+};
+
+/* ============================== MODELLO ============================== */
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const FMR={P:[5.0,6.2],D:[5.6,6.9],C:[5.8,7.9],A:[5.9,8.8]};   // fantamedia attesa: fondo → top del ruolo
+const PRR={P:[24,34],D:[22,33],C:[22,33],A:[21,33]};            // presenze attese: fondo → top
+
+function project(players,cfg){
+  const out=players.map(p=>({...p}));
+  ROLES.forEach(R=>{
+    const g=out.filter(p=>p.ruolo===R);
+    if(!g.length) return;
+    const vals=g.map(p=>p.fvm||p.qt||1);
+    const mx=Math.max(...vals), mn=Math.min(...vals);
+    g.forEach(p=>{
+      const v=p.fvm||p.qt||1;
+      const pct=mx>mn?Math.pow((v-mn)/(mx-mn),0.75):0.5;
+      const mFm=FMR[R][0]+pct*(FMR[R][1]-FMR[R][0]);
+      const mPr=PRR[R][0]+pct*(PRR[R][1]-PRR[R][0]);
+      const hasSt=p.pv>0&&p.fm>0;
+      p.baseFm = hasSt ? 0.62*p.fm+0.38*mFm : mFm;
+      p.basePres = Math.round(hasSt ? 0.55*clamp(p.pv,0,38)+0.45*mPr : mPr);
+      p.fmA = p.ovrFm!=null?p.ovrFm:+p.baseFm.toFixed(2);
+      p.presA = p.ovrPres!=null?p.ovrPres:p.basePres;
+      p.fp = (p.fmA + (p.rig?cfg.rigBonus:0)) * p.presA;
+    });
+  });
+  return out;
+}
+
+function valuate(players,cfg){
+  const nT=cfg.teams.length;
+  const slotTot=ROLES.reduce((s,R)=>s+cfg.slots[R],0);
+  const pool=nT*cfg.budget, seats=nT*slotTot;
+  const surplusPool=Math.max(1,pool-seats);
+  const ps=project(players,cfg);
+
+  ROLES.forEach(R=>{
+    const g=ps.filter(p=>p.ruolo===R).sort((a,b)=>b.fp-a.fp);
+    const idx=Math.min(g.length-1, nT*cfg.starters[R]);
+    const repl=g.length?g[idx].fp:0;
+    g.forEach(p=>{p.repl=repl; p.vor=Math.max(0,p.fp-repl);});
+  });
+
+  const sumVOR=ps.reduce((s,p)=>s+p.vor,0)||1;
+  ps.forEach(p=>{p.prezzo=Math.max(1,Math.round(1+p.vor/sumVOR*surplusPool));});
+
+  // --- mercato live: inflazione su ciò che resta ---
+  const taken=ps.filter(p=>p.owner);
+  const spent=taken.reduce((s,p)=>s+(p.paid||0),0);
+  const remCred=pool-spent, remSeats=seats-taken.length;
+  const remSurplus=Math.max(0,remCred-remSeats);
+  const remVOR=ps.filter(p=>!p.owner).reduce((s,p)=>s+p.vor,0)||1;
+  ps.forEach(p=>{p.live=p.owner?p.paid:Math.max(1,Math.round(1+p.vor/remVOR*remSurplus));});
+  const infl=(remSurplus/remVOR)/(surplusPool/sumVOR);
+
+  // --- fasce: taglio sui 4 salti di prezzo più grandi, per ruolo ---
+  ROLES.forEach(R=>{
+    const g=ps.filter(p=>p.ruolo===R&&p.prezzo>=3).sort((a,b)=>b.prezzo-a.prezzo);
+    const gaps=g.slice(0,-1).map((p,i)=>({i,d:p.prezzo-g[i+1].prezzo}))
+                 .sort((a,b)=>b.d-a.d).slice(0,3).map(x=>x.i).sort((a,b)=>a-b);
+    let t=1; g.forEach((p,i)=>{p.fascia=t; if(gaps.includes(i)) t++;});
+    ps.filter(p=>p.ruolo===R&&p.prezzo<3).forEach(p=>{p.fascia=5;});
+  });
+
+  const teamState=cfg.teams.map(name=>{
+    const own=ps.filter(p=>p.owner===name);
+    const sp=own.reduce((s,p)=>s+(p.paid||0),0);
+    const byR={}; ROLES.forEach(R=>byR[R]=own.filter(p=>p.ruolo===R).length);
+    const left=slotTot-own.length;
+    return {name,own,spent:sp,credits:cfg.budget-sp,slotsLeft:left,byR,
+            maxBid:Math.max(0,cfg.budget-sp-Math.max(0,left-1))};
+  });
+
+  return {ps,pool,seats,spent,remCred,remSeats,infl,teamState,slotTot,surplusPool,sumVOR};
+}
+
+/* ============================== IMPORT XLSX ============================== */
+const norm=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');
+function readSheet(ab){
+  const wb=XLSX.read(ab,{type:'array'});
+  const sh=wb.Sheets[wb.SheetNames[0]];
+  const rows=XLSX.utils.sheet_to_json(sh,{header:1,raw:true});
+  let h=-1;
+  for(let i=0;i<Math.min(8,rows.length);i++){
+    if((rows[i]||[]).some(c=>norm(c)==='nome')){h=i;break;}
+  }
+  if(h<0) throw new Error('Intestazione non trovata: serve una colonna "Nome".');
+  const head=rows[h].map(norm);
+  const col=n=>head.indexOf(n);
+  const ci={id:col('id'),r:col('r'),nome:col('nome'),squadra:col('squadra'),
+            qt:head.findIndex(x=>x==='qta'||x==='qtaa'||x==='quotazione'),
+            fvm:head.findIndex(x=>x==='fvm'),pv:col('pv'),mv:col('mv'),fm:col('fm')};
+  const out=[];
+  for(let i=h+1;i<rows.length;i++){
+    const r=rows[i]||[]; const nome=r[ci.nome];
+    if(!nome||typeof nome!=='string') continue;
+    const ruolo=String(r[ci.r]||'').trim().toUpperCase().charAt(0);
+    if(!ROLES.includes(ruolo)) continue;
+    out.push({
+      key:ci.id>=0&&r[ci.id]?String(r[ci.id]):norm(nome)+norm(r[ci.squadra]),
+      nome:nome.trim(), squadra:String(r[ci.squadra]||'').trim(), ruolo,
+      qt:+r[ci.qt]||0, fvm:+r[ci.fvm]||0, pv:+r[ci.pv]||0, mv:+r[ci.mv]||0, fm:+r[ci.fm]||0
+    });
+  }
+  return out;
+}
+
+/* ============================== UI BASE ============================== */
+const Tag=({r})=><span className={'tag '+r}>{r}</span>;
+const Fascia=({f})=> f&&f<5 ? <span className="fas" data-t={f}>F{f}</span> : <span className="fas">—</span>;
+
+function Field({label,children}){return <div><label className="f">{label}</label>{children}</div>;}
+function Num({value,onChange,step=1,min=0}){
+  return <input className="f num" type="number" step={step} min={min} value={value}
+    onChange={e=>onChange(e.target.value===''?'':+e.target.value)}/>;
+}
+
+/* ============================== APP ============================== */
+function App(){
+  const [tab,setTab]=useState('asta');
+  const [cfg,setCfg]=useState(DEFCFG);
+  const [players,setPlayers]=useState(()=>parseDemo());
+  const [demo,setDemo]=useState(true);
+  const [ready,setReady]=useState(false);
+  const [msg,setMsg]=useState('');
+
+  useEffect(()=>{(async()=>{
+    const d=await store.load();
+    if(d&&d.players&&d.players.length){setCfg({...DEFCFG,...d.cfg});setPlayers(d.players);setDemo(!!d.demo);}
+    setReady(true);
+  })();},[]);
+  useEffect(()=>{ if(ready) store.save({cfg,players,demo}); },[cfg,players,demo,ready]);
+
+  const M=useMemo(()=>valuate(players,cfg),[players,cfg]);
+  const me=cfg.teams[0];
+  const myState=M.teamState[0];
+
+  const upd=(id,patch)=>setPlayers(ps=>ps.map(p=>p.id===id?{...p,...patch}:p));
+
+  function importFile(file){
+    const fr=new FileReader();
+    fr.onload=e=>{
+      try{
+        const rows=readSheet(new Uint8Array(e.target.result));
+        if(!rows.length){setMsg('Nessun giocatore riconosciuto nel file.');return;}
+        const hasStats=rows.some(r=>r.pv>0), hasQuot=rows.some(r=>r.qt>0);
+        setPlayers(prev=>{
+          const base=demo?[]:prev;
+          const map=new Map(base.map(p=>[p.key||norm(p.nome)+norm(p.squadra),p]));
+          rows.forEach(r=>{
+            const ex=map.get(r.key);
+            if(ex){
+              map.set(r.key,{...ex,
+                qt:r.qt||ex.qt, fvm:r.fvm||ex.fvm,
+                pv:r.pv||ex.pv, mv:r.mv||ex.mv, fm:r.fm||ex.fm, squadra:r.squadra||ex.squadra});
+            }else{
+              map.set(r.key,{id:uid(),key:r.key,...r,rig:false,tgt:0,ovrFm:null,ovrPres:null,owner:null,paid:null});
+            }
+          });
+          return [...map.values()];
+        });
+        setDemo(false);
+        setMsg(`Caricati ${rows.length} giocatori${hasQuot?' con quotazioni':''}${hasStats?' e statistiche':''}.`);
+      }catch(err){ setMsg('Errore: '+err.message); }
+    };
+    fr.readAsArrayBuffer(file);
+  }
+
+  const T=[['asta','Asta live'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
+
+  return <div className="app">
+    <header className="top">
+      <div className="top-row">
+        <div>
+          <div className="brand">AST<em>A</em></div>
+          <div className="brand-sub">assistente Classic · valore sopra il sostituto</div>
+        </div>
+        <div className="top-stats">
+          <div className="tstat"><b className="num">{myState.credits}</b><span>miei crediti</span></div>
+          <div className="tstat"><b className="num">{myState.slotsLeft}</b><span>slot liberi</span></div>
+          <div className="tstat"><b className="num">{M.infl>=1?'+':''}{Math.round((M.infl-1)*100)}%</b><span>mercato</span></div>
+        </div>
+      </div>
+      <nav className="tabs">
+        {T.map(([k,l])=><button key={k} data-on={tab===k?'1':'0'} onClick={()=>setTab(k)}>{l}</button>)}
+      </nav>
+    </header>
+
+    {demo && <div className="banner"><b>Stai usando dati demo.</b> Quotazioni e statistiche sono indicative:
+      carica il listone ufficiale (Quotazioni + Statistiche, .xlsx) da <i>Impostazioni</i> per lavorare sui numeri veri.</div>}
+    {msg && <div className="banner" onClick={()=>setMsg('')}>{msg} <span style={{color:'#8A7A50'}}>(tocca per chiudere)</span></div>}
+
+    {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me}/>}
+    {tab==='listone'&& <Listone M={M} cfg={cfg} upd={upd}/>}
+    {tab==='rosa'   && <Rosa M={M} cfg={cfg} me={me} upd={upd}/>}
+    {tab==='setup'  && <Setup cfg={cfg} setCfg={setCfg} importFile={importFile} M={M}
+                        reset={()=>{setPlayers(parseDemo());setDemo(true);setCfg(DEFCFG);}}
+                        clearAuction={()=>setPlayers(ps=>ps.map(p=>({...p,owner:null,paid:null})))}
+                        players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}/>}
+  </div>;
+}
+
+/* ============================== TAB: ASTA ============================== */
+function Asta({M,cfg,upd,me}){
+  const [q,setQ]=useState('');
+  const [sel,setSel]=useState(null);
+  const [bid,setBid]=useState('');
+  const [team,setTeam]=useState(me);
+  const boxRef=useRef(null);
+
+  const free=M.ps.filter(p=>!p.owner);
+  const hits=q.length>1
+    ? free.filter(p=>p.nome.toLowerCase().includes(q.toLowerCase())||p.squadra.toLowerCase().includes(q.toLowerCase()))
+          .sort((a,b)=>b.live-a.live).slice(0,25)
+    : [];
+  const P=sel?M.ps.find(x=>x.id===sel.id):null;
+
+  const myT=M.teamState.find(t=>t.name===me);
+  const roleFull=P?myT.byR[P.ruolo]>=cfg.slots[P.ruolo]:false;
+  const maxTech=P?Math.min(myT.maxBid, myT.credits):0;
+
+  function assign(){
+    if(!P) return;
+    const price=bid===''?P.live:+bid;
+    upd(P.id,{owner:team,paid:Math.max(1,price)});
+    setSel(null);setQ('');setBid('');setTeam(me);
+  }
+
+  return <>
+    <div className="card" style={{position:'relative',overflow:'visible'}}>
+      <h2>Chi è all'asta?</h2>
+      <p className="hint">Cerca il giocatore chiamato, poi registra a chi va e a quanto.</p>
+      <div style={{position:'relative'}} ref={boxRef}>
+        <input className="f" placeholder="Nome o squadra…" value={q}
+          onChange={e=>{setQ(e.target.value);setSel(null);}} autoComplete="off"/>
+        {hits.length>0&&!sel&&<div className="sug">
+          {hits.map(p=><button key={p.id} onClick={()=>{setSel(p);setQ(p.nome);setBid('');}}>
+            <Tag r={p.ruolo}/>
+            <span style={{flex:1}}><b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
+            <Fascia f={p.fascia}/>
+            <span className="price" style={{minWidth:34}}>{p.live}</span>
+          </button>)}
+        </div>}
+      </div>
+    </div>
+
+    {P && <>
+      <div className="bidbox">
+        <div className="bidhead">
+          <div>
+            <div className="bidname">{P.nome}</div>
+            <div className="bidmeta">{P.squadra} · {ROLENAME[P.ruolo]} · fascia {P.fascia<5?P.fascia:'fondo'}</div>
+          </div>
+          <Fascia f={P.fascia}/>
+        </div>
+        <div style={{marginTop:12}}>
+          <div className="bignum">{P.live}<small> crediti · prezzo di mercato ora</small></div>
+        </div>
+        <div className="gauge">
+          <i style={{left:'50%',width:clamp(Math.abs(M.infl-1)*140,1,50)+'%',
+                     transform:M.infl<1?'translateX(-100%)':'none'}}/>
+        </div>
+        <div className="gaugelab"><span>deflazione</span>
+          <span>{M.infl>=1?'i big stanno andando a sconto':'i big sono strapagati'}</span><span>inflazione</span></div>
+        <div className="bidgrid">
+          <div><span>listino base</span><b>{P.prezzo}</b></div>
+          <div><span>max tecnico</span><b>{roleFull?'—':maxTech}</b></div>
+          <div><span>punti attesi</span><b>{Math.round(P.fp)}</b></div>
+          <div><span>sopra il sostituto</span><b>+{Math.round(P.vor)}</b></div>
+        </div>
+      </div>
+
+      {roleFull && <div className="banner">Hai già riempito gli slot da {ROLENAME[P.ruolo].toLowerCase()}.</div>}
+
+      <div className="card">
+        <div className="grid g2">
+          <Field label="Prezzo finale"><Num value={bid===''?P.live:bid} onChange={setBid} min={1}/></Field>
+          <Field label="Va a">
+            <select className="f" value={team} onChange={e=>setTeam(e.target.value)}>
+              {cfg.teams.map(t=><option key={t}>{t}</option>)}
+            </select>
+          </Field>
+        </div>
+        {bid!==''&&+bid>P.live&&<p className="hint" style={{color:'var(--warn)',marginTop:8}}>
+          {Math.round((+bid/P.live-1)*100)}% sopra il prezzo di mercato — accettabile solo se è un tuo obiettivo dichiarato.</p>}
+        <div className="row" style={{marginTop:10}}>
+          <button className="btn gold" onClick={assign}>Assegna</button>
+          <button className="btn ghost" onClick={()=>{setSel(null);setQ('');}}>Annulla</button>
+        </div>
+      </div>
+    </>}
+
+    <div className="card">
+      <h2>Chi resta, per fascia</h2>
+      <p className="hint">Ogni blocco è un giocatore ancora libero. Quando una fascia si svuota, il prezzo di quella sotto esplode.</p>
+      {ROLES.map(R=>{
+        const g=M.ps.filter(p=>p.ruolo===R&&p.fascia<5).sort((a,b)=>a.fascia-b.fascia||b.prezzo-a.prezzo);
+        return <div key={R} className="striprow">
+          <b><Tag r={R}/> {g.filter(p=>!p.owner).length}/{g.length}</b>
+          <div className="strip">{g.map(p=><i key={p.id} data-gone={p.owner?'1':'0'} title={p.nome+' · F'+p.fascia}/>)}</div>
+        </div>;
+      })}
+    </div>
+
+    <div className="card">
+      <h2>Crediti degli avversari</h2>
+      <p className="hint">Chi ha ancora budget può rilanciarti. Chi è a secco no.</p>
+      <div className="row">
+        {M.teamState.map(t=><div key={t.name} className="teamchip" data-me={t.name===me?'1':'0'}
+            data-low={t.credits<=t.slotsLeft+3?'1':'0'}>
+          <b>{t.name}</b>
+          <span>{t.credits} cr · {t.slotsLeft} slot · max {t.maxBid}</span>
+        </div>)}
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Ultimi acquisti</h2>
+      {M.ps.filter(p=>p.owner).slice(-12).reverse().map(p=>
+        <div key={p.id} className="row" style={{justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid #EEF1ED'}}>
+          <span><Tag r={p.ruolo}/> <b>{p.nome}</b> <span className="pteam">{p.owner}</span></span>
+          <span className="row">
+            <span className="num" style={{color:p.paid>p.prezzo?'var(--warn)':'var(--ok)'}}>{p.paid} <small style={{color:'var(--muted)'}}>vs {p.prezzo}</small></span>
+            <button className="btn ghost sm" onClick={()=>upd(p.id,{owner:null,paid:null})}>annulla</button>
+          </span>
+        </div>)}
+      {!M.ps.some(p=>p.owner)&&<div className="empty">Nessun giocatore assegnato. Il mercato parte da qui.</div>}
+    </div>
+  </>;
+}
+
+/* ============================== TAB: LISTONE ============================== */
+function Listone({M,cfg,upd}){
+  const [role,setRole]=useState('A');
+  const [sort,setSort]=useState('prezzo');
+  const [dir,setDir]=useState(-1);
+  const [hideGone,setHideGone]=useState(false);
+  const [onlyTgt,setOnlyTgt]=useState(false);
+  const [q,setQ]=useState('');
+
+  let rows=M.ps.filter(p=>p.ruolo===role);
+  if(hideGone) rows=rows.filter(p=>!p.owner);
+  if(onlyTgt) rows=rows.filter(p=>p.tgt>0);
+  if(q) rows=rows.filter(p=>p.nome.toLowerCase().includes(q.toLowerCase()));
+  rows=[...rows].sort((a,b)=>{
+    const va=a[sort],vb=b[sort];
+    return (typeof va==='string'?va.localeCompare(vb):va-vb)*dir;
+  });
+
+  const th=(k,l)=><th className="s" onClick={()=>{sort===k?setDir(-dir):(setSort(k),setDir(-1));}}>
+    {l}{sort===k?(dir<0?' ▾':' ▴'):''}</th>;
+
+  return <>
+    <div className="card">
+      <div className="row" style={{marginBottom:10}}>
+        {ROLES.map(R=><button key={R} className={'btn '+(role===R?'':'ghost')} onClick={()=>setRole(R)}>
+          {ROLENAME[R]}</button>)}
+      </div>
+      <div className="row">
+        <input className="f" style={{flex:'1 1 160px',width:'auto'}} placeholder="Cerca…" value={q} onChange={e=>setQ(e.target.value)}/>
+        <button className={'btn sm '+(hideGone?'':'ghost')} onClick={()=>setHideGone(v=>!v)}>Solo liberi</button>
+        <button className={'btn sm '+(onlyTgt?'':'ghost')} onClick={()=>setOnlyTgt(v=>!v)}>★ Obiettivi</button>
+      </div>
+      <p className="hint" style={{marginTop:9,marginBottom:0}}>
+        <b>Prezzo</b> = quanto vale davvero nella tua lega. <b>FM</b> e <b>Pres</b> sono modificabili:
+        cambia la proiezione e tutti i prezzi si riequilibrano. <b>R</b> = rigorista (+{cfg.rigBonus} di fantamedia).
+      </p>
+    </div>
+
+    <div className="tw">
+      <table>
+        <thead><tr>
+          <th>★</th><th>Giocatore</th>{th('fascia','F')}{th('prezzo','Prezzo')}{th('live','Ora')}
+          {th('fp','Punti')}{th('vor','+Sost.')}<th>FM</th><th>Pres</th><th>R</th>{th('qt','Qt.')}<th>Preso da</th>
+        </tr></thead>
+        <tbody>
+          {rows.map(p=><tr key={p.id} data-gone={p.owner?'1':'0'} data-mine={p.owner===cfg.teams[0]?'1':'0'}>
+            <td><button className="star" data-on={p.tgt?'1':'0'} onClick={()=>upd(p.id,{tgt:p.tgt?0:1})}>★</button></td>
+            <td><span className="pname">{p.nome}</span> <span className="pteam">{p.squadra}</span></td>
+            <td><Fascia f={p.fascia}/></td>
+            <td className="price">{p.prezzo}</td>
+            <td className="n" style={{color:p.live>p.prezzo?'var(--warn)':'var(--ok)'}}>{p.live}</td>
+            <td className="n">{Math.round(p.fp)}</td>
+            <td className="n">{Math.round(p.vor)}</td>
+            <td className="n"><input className="cellinput" type="number" step="0.05" value={p.fmA}
+                onChange={e=>upd(p.id,{ovrFm:e.target.value===''?null:+e.target.value})}/></td>
+            <td className="n"><input className="cellinput" type="number" step="1" value={p.presA}
+                onChange={e=>upd(p.id,{ovrPres:e.target.value===''?null:+e.target.value})}/></td>
+            <td><input type="checkbox" checked={p.rig} onChange={e=>upd(p.id,{rig:e.target.checked})}/></td>
+            <td className="n" style={{color:'var(--muted)'}}>{p.qt}</td>
+            <td style={{fontSize:12,color:'var(--muted)'}}>{p.owner?`${p.owner} · ${p.paid}`:'—'}</td>
+          </tr>)}
+        </tbody>
+      </table>
+      {!rows.length&&<div className="empty">Nessun giocatore con questi filtri.</div>}
+    </div>
+  </>;
+}
+
+/* ============================== TAB: ROSA ============================== */
+function Rosa({M,cfg,me,upd}){
+  const t=M.teamState.find(x=>x.name===me);
+  const nT=cfg.teams.length;
+
+  // allocazione consigliata: quota del budget che il modello assegna ai titolari di ogni ruolo
+  const alloc={}; let tot=0;
+  ROLES.forEach(R=>{
+    const g=M.ps.filter(p=>p.ruolo===R).sort((a,b)=>b.prezzo-a.prezzo).slice(0,nT*cfg.starters[R]);
+    alloc[R]=g.reduce((s,p)=>s+p.prezzo,0)/nT; tot+=alloc[R];
+  });
+  const scale=(cfg.budget-(M.slotTot-ROLES.reduce((s,R)=>s+cfg.starters[R],0)))/ (tot||1);
+  ROLES.forEach(R=>alloc[R]=Math.round(alloc[R]*scale));
+
+  const mine=t.own;
+  const spentR={}; ROLES.forEach(R=>spentR[R]=mine.filter(p=>p.ruolo===R).reduce((s,p)=>s+p.paid,0));
+  const ptsTot=mine.reduce((s,p)=>s+p.fp,0);
+
+  return <>
+    <div className="card">
+      <h2>Budget per ruolo</h2>
+      <p className="hint">La barra grigia è quanto il modello ti consiglia di spendere per quel reparto. Rosso = hai sforato.</p>
+      {ROLES.map(R=>{
+        const sp=spentR[R], target=alloc[R]||1;
+        return <div key={R} style={{marginBottom:11}}>
+          <div className="row" style={{justifyContent:'space-between',fontSize:13,marginBottom:4}}>
+            <span><Tag r={R}/> {ROLENAME[R]} <span className="pteam">{t.byR[R]}/{cfg.slots[R]}</span></span>
+            <span className="num">{sp} <span style={{color:'var(--muted)'}}>/ {target}</span></span>
+          </div>
+          <div className="bar"><i style={{width:clamp(sp/target*100,0,100)+'%'}} data-over={sp>target?'1':'0'}/></div>
+        </div>;
+      })}
+      <div className="row" style={{justifyContent:'space-between',borderTop:'1px solid var(--line)',paddingTop:9,marginTop:4}}>
+        <b>Totale</b><b className="num">{t.spent} / {cfg.budget}</b>
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Rosa</h2>
+      <p className="hint">Punti attesi stagionali della rosa: <b className="num">{Math.round(ptsTot)}</b></p>
+      {ROLES.map(R=>{
+        const g=mine.filter(p=>p.ruolo===R).sort((a,b)=>b.fp-a.fp);
+        if(!g.length) return null;
+        return <div key={R} style={{marginBottom:8}}>
+          {g.map(p=><div key={p.id} className="row" style={{justifyContent:'space-between',padding:'4px 0'}}>
+            <span><Tag r={p.ruolo}/> <b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
+            <span className="row">
+              <span className="num" style={{color:p.paid<=p.prezzo?'var(--ok)':'var(--warn)'}}>{p.paid}</span>
+              <span className="num" style={{color:'var(--muted)',fontSize:12}}>val. {p.prezzo}</span>
+              <button className="btn ghost sm" onClick={()=>upd(p.id,{owner:null,paid:null})}>↺</button>
+            </span>
+          </div>)}
+        </div>;
+      })}
+      {!mine.length&&<div className="empty">Rosa vuota. Assegnati il primo giocatore dalla scheda Asta.</div>}
+    </div>
+
+    <div className="card">
+      <h2>Obiettivi ancora liberi</h2>
+      {M.ps.filter(p=>p.tgt&&!p.owner).sort((a,b)=>b.live-a.live).map(p=>
+        <div key={p.id} className="row" style={{justifyContent:'space-between',padding:'4px 0'}}>
+          <span><Tag r={p.ruolo}/> <b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
+          <span className="price">{p.live}</span>
+        </div>)}
+      {!M.ps.some(p=>p.tgt&&!p.owner)&&<div className="empty">Segna i tuoi obiettivi con ★ nel Listone.</div>}
+    </div>
+  </>;
+}
+
+/* ============================== TAB: SETUP ============================== */
+function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,setDemo,setMsg}){
+  const [nTeams,setNTeams]=useState(cfg.teams.length);
+  const fileRef=useRef();
+
+  function setTeams(n){
+    n=clamp(n,2,20); setNTeams(n);
+    const t=[...cfg.teams];
+    while(t.length<n) t.push('Squadra '+(t.length+1));
+    setCfg({...cfg,teams:t.slice(0,n)});
+  }
+  function exportJSON(){
+    const blob=new Blob([JSON.stringify({cfg,players},null,1)],{type:'application/json'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download='asta-backup.json'; a.click();
+  }
+  function importJSON(f){
+    const fr=new FileReader();
+    fr.onload=e=>{try{const d=JSON.parse(e.target.result);
+      if(d.cfg)setCfg({...DEFCFG,...d.cfg}); if(d.players){setPlayers(d.players);setDemo(false);}
+      setMsg('Backup ripristinato.');}catch(err){setMsg('File non valido.');}};
+    fr.readAsText(f);
+  }
+
+  return <>
+    <div className="card">
+      <h2>Listone</h2>
+      <p className="hint">Su fantacalcio.it scarica <b>Quotazioni</b> e <b>Statistiche</b> in Excel e caricali qui, uno alla volta:
+        il secondo file si fonde con il primo. Riconosce le colonne Id, R, Nome, Squadra, Qt.A, FVM, Pv, Mv, Fm.</p>
+      <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}}
+        onChange={e=>{if(e.target.files[0])importFile(e.target.files[0]); e.target.value='';}}/>
+      <div className="row">
+        <button className="btn" onClick={()=>fileRef.current.click()}>Carica file Excel</button>
+        <button className="btn ghost" onClick={exportJSON}>Esporta backup</button>
+        <label className="btn ghost" style={{display:'inline-block'}}>
+          Importa backup
+          <input type="file" accept=".json" style={{display:'none'}}
+            onChange={e=>{if(e.target.files[0])importJSON(e.target.files[0]); e.target.value='';}}/>
+        </label>
+      </div>
+      <p className="hint" style={{marginTop:9,marginBottom:0}}>{players.length} giocatori in archivio.</p>
+    </div>
+
+    <div className="card">
+      <h2>Regole della lega</h2>
+      <div className="grid g4">
+        <Field label="Squadre"><Num value={nTeams} onChange={setTeams} min={2}/></Field>
+        <Field label="Crediti"><Num value={cfg.budget} onChange={v=>setCfg({...cfg,budget:v||1})} min={1}/></Field>
+        <Field label="Bonus rigorista"><Num value={cfg.rigBonus} step={0.05} onChange={v=>setCfg({...cfg,rigBonus:v})}/></Field>
+      </div>
+      <p className="hint" style={{marginTop:12}}>Slot in rosa e quanti ne schieri ogni giornata. I titolari definiscono il
+        <b> livello del sostituto</b>: con {nTeams} squadre e {cfg.starters.C} centrocampisti titolari, il {nTeams*cfg.starters.C}° centrocampista
+        è il "gratis" con cui confrontare tutti gli altri.</p>
+      <div className="grid g4">
+        {ROLES.map(R=><Field key={R} label={'Rosa '+R}>
+          <Num value={cfg.slots[R]} onChange={v=>setCfg({...cfg,slots:{...cfg.slots,[R]:v||1}})} min={1}/></Field>)}
+      </div>
+      <div className="grid g4" style={{marginTop:10}}>
+        {ROLES.map(R=><Field key={R} label={'Titolari '+R}>
+          <Num value={cfg.starters[R]} onChange={v=>setCfg({...cfg,starters:{...cfg.starters,[R]:v||1}})} min={1}/></Field>)}
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Squadre</h2>
+      <p className="hint">La prima sei tu. Cambia i nomi per riconoscere gli avversari durante l'asta.</p>
+      <div className="grid g2">
+        {cfg.teams.map((t,i)=><Field key={i} label={i===0?'Tu':'Squadra '+(i+1)}>
+          <input className="f" value={t} onChange={e=>{
+            const a=[...cfg.teams]; const old=a[i]; a[i]=e.target.value;
+            setCfg({...cfg,teams:a});
+            setPlayers(ps=>ps.map(p=>p.owner===old?{...p,owner:e.target.value}:p));
+          }}/></Field>)}
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Come vengono fuori i prezzi</h2>
+      <p className="hint" style={{marginBottom:0}}>
+        Punti attesi = fantamedia proiettata × presenze attese. Al giocatore si sottrae il
+        sostituto del suo ruolo: resta il <b>surplus</b>. Il monte crediti della lega
+        ({M.pool}), tolto 1 credito per ogni casella da riempire ({M.seats}), viene diviso tra tutti in proporzione al surplus.
+        Durante l'asta il calcolo si rifà su crediti e giocatori rimasti: è l'inflazione.
+      </p>
+    </div>
+
+    <div className="card">
+      <h2>Ricomincia</h2>
+      <div className="row">
+        <button className="btn ghost" onClick={clearAuction}>Azzera gli acquisti</button>
+        <button className="btn ghost" onClick={()=>{if(confirm('Cancello tutto e torno ai dati demo?'))reset();}}>Reset totale</button>
+      </div>
+    </div>
+  </>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
