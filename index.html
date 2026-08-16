@@ -335,13 +335,15 @@ function parseDemo(){
 
 const DEFCFG={
   teams:['Io','Squadra 2','Squadra 3','Squadra 4','Squadra 5','Squadra 6','Squadra 7','Squadra 8'],
-  budget:500, slots:{P:3,D:8,C:8,A:6}, starters:{P:1,D:4,C:4,A:3}, rigBonus:0.4
+  budget:500, slots:{P:3,D:8,C:8,A:6}, starters:{P:1,D:4,C:4,A:3}, rigBonus:0.4,
+  mod:true, modK:1, alloc:{P:9,D:26,C:25,A:40}
 };
 
 /* ============================== MODELLO ============================== */
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const FMR={P:[5.0,6.2],D:[5.6,6.9],C:[5.8,7.9],A:[5.9,8.8]};   // fantamedia attesa: fondo → top del ruolo
 const PRR={P:[24,34],D:[22,33],C:[22,33],A:[21,33]};            // presenze attese: fondo → top
+const MVR={P:[5.65,6.30],D:[5.70,6.35],C:[5.80,6.45],A:[5.75,6.40]}; // media voto attesa (serve al modificatore)
 
 function project(players,cfg){
   const out=players.map(p=>({...p}));
@@ -355,15 +357,52 @@ function project(players,cfg){
       const pct=mx>mn?Math.pow((v-mn)/(mx-mn),0.75):0.5;
       const mFm=FMR[R][0]+pct*(FMR[R][1]-FMR[R][0]);
       const mPr=PRR[R][0]+pct*(PRR[R][1]-PRR[R][0]);
+      const mMv=MVR[R][0]+pct*(MVR[R][1]-MVR[R][0]);
       const hasSt=p.pv>0&&p.fm>0;
       p.baseFm = hasSt ? 0.62*p.fm+0.38*mFm : mFm;
+      p.baseMv = hasSt&&p.mv>0 ? 0.65*p.mv+0.35*mMv : mMv;
       p.basePres = Math.round(hasSt ? 0.55*clamp(p.pv,0,38)+0.45*mPr : mPr);
       p.fmA = p.ovrFm!=null?p.ovrFm:+p.baseFm.toFixed(2);
+      p.mvA = p.ovrMv!=null?p.ovrMv:+p.baseMv.toFixed(2);
       p.presA = p.ovrPres!=null?p.ovrPres:p.basePres;
-      p.fp = (p.fmA + (p.rig?cfg.rigBonus:0)) * p.presA;
+      p.modPts = 0;
+      p.puri = (p.fmA + (p.rig?cfg.rigBonus:0)) * p.presA;
+      p.fp = p.puri;
     });
   });
+
+  // --- modificatore di difesa: quanto sposta la media del blocco P + 3 D ---
+  if(cfg.mod){
+    ['P','D'].forEach(R=>{
+      const g=out.filter(p=>p.ruolo===R).sort((a,b)=>b.mvA-a.mvA);
+      if(!g.length) return;
+      const idx=Math.min(g.length-1, cfg.teams.length*cfg.starters[R]);
+      const rep=g[idx].mvA;
+      g.forEach(p=>{
+        p.modPts = Math.max(0,(p.mvA-rep))*cfg.modK*p.presA;
+        p.fp = p.puri + p.modPts;
+      });
+    });
+  }
   return out;
+}
+
+/* miglior blocco difensivo per squadra di Serie A: portiere + 3 difensori */
+function blocchi(ps,cfg){
+  const teams={};
+  ps.filter(p=>p.ruolo==='P'||p.ruolo==='D').forEach(p=>{
+    (teams[p.squadra]=teams[p.squadra]||{P:[],D:[]})[p.ruolo].push(p);
+  });
+  return Object.entries(teams).map(([sq,g])=>{
+    const P=g.P.sort((a,b)=>b.mvA-a.mvA)[0];
+    const D=g.D.sort((a,b)=>b.mvA-a.mvA).slice(0,3);
+    if(!P||D.length<3) return null;
+    const men=[P,...D];
+    const media=men.reduce((s,p)=>s+p.mvA,0)/4;
+    const costo=men.reduce((s,p)=>s+p.prezzo,0);
+    const liberi=men.filter(p=>!p.owner).length;
+    return {sq,men,media:+media.toFixed(3),costo,liberi};
+  }).filter(Boolean).sort((a,b)=>b.media-a.media);
 }
 
 function valuate(players,cfg){
@@ -411,6 +450,40 @@ function valuate(players,cfg){
   });
 
   return {ps,pool,seats,spent,remCred,remSeats,infl,teamState,slotTot,surplusPool,sumVOR};
+}
+
+/* ============================== SIMULATORE STRATEGIE ============================== */
+const PRESET={
+  'Blocco difensivo':{P:9,D:26,C:25,A:40},
+  'Equilibrata':     {P:6,D:15,C:27,A:52},
+  'Tripletta attacco':{P:5,D:10,C:22,A:63},
+  'Centrocampo bonus':{P:6,D:12,C:40,A:42},
+  'Difesa low cost': {P:5,D:8,C:30,A:57}
+};
+
+/* Compra la rosa migliore possibile con una data ripartizione del budget.
+   Solo i titolari fanno punti: la panchina si riempie a 1 credito. */
+function simula(ps,cfg,alloc){
+  const out={roles:{},pts:0,spent:0};
+  ROLES.forEach(R=>{
+    const nSlot=cfg.slots[R], nTit=Math.min(cfg.starters[R],nSlot);
+    const bench=nSlot-nTit;
+    const roleBud=Math.round(cfg.budget*alloc[R]/100);
+    const titBud=Math.max(nTit, roleBud-bench);
+    const pool=ps.filter(p=>p.ruolo===R&&!p.owner).sort((a,b)=>b.fp-a.fp);
+    const tit=[]; let sp=0;
+    for(const p of pool){
+      if(tit.length>=nTit) break;
+      const rem=nTit-tit.length;
+      if(sp+p.prezzo<=titBud-(rem-1)){tit.push(p);sp+=p.prezzo;}
+    }
+    const rest=pool.filter(p=>!tit.includes(p)).sort((a,b)=>a.prezzo-b.prezzo||b.fp-a.fp);
+    const pan=rest.slice(0,bench);
+    const spPan=pan.reduce((s,p)=>s+p.prezzo,0);
+    out.roles[R]={tit,pan,spesa:sp+spPan,budget:roleBud,pts:tit.reduce((s,p)=>s+p.fp,0)};
+    out.pts+=out.roles[R].pts; out.spent+=sp+spPan;
+  });
+  return out;
 }
 
 /* ============================== IMPORT XLSX ============================== */
@@ -505,7 +578,7 @@ function App(){
     fr.readAsArrayBuffer(file);
   }
 
-  const T=[['asta','Asta live'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
+  const T=[['asta','Asta live'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
 
   return <div className="app">
     <header className="top">
@@ -530,6 +603,7 @@ function App(){
     {msg && <div className="banner" onClick={()=>setMsg('')}>{msg} <span style={{color:'#8A7A50'}}>(tocca per chiudere)</span></div>}
 
     {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me}/>}
+    {tab==='strategia'&& <Strategia M={M} cfg={cfg} setCfg={setCfg} upd={upd}/>}
     {tab==='listone'&& <Listone M={M} cfg={cfg} upd={upd}/>}
     {tab==='rosa'   && <Rosa M={M} cfg={cfg} me={me} upd={upd}/>}
     {tab==='setup'  && <Setup cfg={cfg} setCfg={setCfg} importFile={importFile} M={M}
@@ -606,6 +680,7 @@ function Asta({M,cfg,upd,me}){
           <div><span>max tecnico</span><b>{roleFull?'—':maxTech}</b></div>
           <div><span>punti attesi</span><b>{Math.round(P.fp)}</b></div>
           <div><span>sopra il sostituto</span><b>+{Math.round(P.vor)}</b></div>
+          {cfg.mod&&P.modPts>0&&<div><span>da modificatore</span><b>+{Math.round(P.modPts)}</b></div>}
         </div>
       </div>
 
@@ -668,6 +743,105 @@ function Asta({M,cfg,upd,me}){
   </>;
 }
 
+/* ============================== TAB: STRATEGIA ============================== */
+function Strategia({M,cfg,setCfg,upd}){
+  const alloc=cfg.alloc;
+  const somma=ROLES.reduce((s,R)=>s+alloc[R],0);
+  const set=(R,v)=>setCfg({...cfg,alloc:{...alloc,[R]:clamp(v||0,0,100)}});
+
+  const norm={}; ROLES.forEach(R=>norm[R]=somma?alloc[R]/somma*100:25);
+  const mia=useMemo(()=>simula(M.ps,cfg,norm),[M.ps,cfg,somma,alloc.P,alloc.D,alloc.C,alloc.A]);
+  const conf=useMemo(()=>Object.entries(PRESET).map(([k,a])=>({k,a,r:simula(M.ps,cfg,a)}))
+                       .sort((x,y)=>y.r.pts-x.r.pts),[M.ps,cfg]);
+  const best=conf[0];
+  const blk=useMemo(()=>cfg.mod?blocchi(M.ps,cfg).slice(0,8):[],[M.ps,cfg]);
+
+  return <>
+    <div className="card">
+      <h2>Ripartizione del budget</h2>
+      <p className="hint">Sposta i crediti tra i reparti e guarda i punti attesi dei titolari muoversi.
+        {cfg.mod && <b> Modificatore attivo: difesa e porta valgono molto più del normale.</b>}</p>
+      <div className="grid g4">
+        {ROLES.map(R=><Field key={R} label={ROLENAME[R]+' %'}>
+          <Num value={alloc[R]} onChange={v=>set(R,v)} min={0}/></Field>)}
+      </div>
+      <p className="hint" style={{marginTop:8,color:somma===100?'var(--muted)':'var(--warn)'}}>
+        Totale {somma}%{somma!==100&&' — normalizzo io le percentuali, ma meglio sistemarle.'}</p>
+      <div className="row" style={{marginTop:6}}>
+        {Object.keys(PRESET).map(k=><button key={k} className="btn ghost sm"
+          onClick={()=>setCfg({...cfg,alloc:PRESET[k]})}>{k}</button>)}
+      </div>
+    </div>
+
+    <div className="bidbox">
+      <div className="bidmeta">punti attesi dai titolari con questa ripartizione</div>
+      <div className="bignum">{Math.round(mia.pts)}<small> su {cfg.budget} crediti</small></div>
+      <div className="bidgrid">
+        {ROLES.map(R=><div key={R}><span>{R} · {Math.round(norm[R])}%</span>
+          <b>{Math.round(mia.roles[R].pts)}</b></div>)}
+        <div><span>vs {best.k}</span><b style={{color:mia.pts>=best.r.pts?'var(--gold)':'#fff'}}>
+          {mia.pts>=best.r.pts?'+':''}{Math.round(mia.pts-best.r.pts)}</b></div>
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Strategie a confronto</h2>
+      <p className="hint">Stessa lega, stessi prezzi, ripartizioni diverse. La differenza è in punti a fine stagione.</p>
+      <div className="tw" style={{border:0}}>
+        <table><thead><tr><th>Strategia</th><th>P</th><th>D</th><th>C</th><th>A</th><th>Punti</th><th>Δ</th></tr></thead>
+        <tbody>{conf.map(c=><tr key={c.k}>
+          <td><b>{c.k}</b></td>
+          {ROLES.map(R=><td key={R} className="n" style={{color:'var(--muted)'}}>{c.a[R]}</td>)}
+          <td className="price">{Math.round(c.r.pts)}</td>
+          <td className="n" style={{color:c===best?'var(--ok)':'var(--muted)'}}>
+            {c===best?'migliore':Math.round(c.r.pts-best.r.pts)}</td>
+        </tr>)}</tbody></table>
+      </div>
+      <p className="hint" style={{marginTop:9,marginBottom:0}}>Il simulatore compra ai prezzi del modello, senza aste al rialzo:
+        serve a scegliere <i>dove</i> concentrare i crediti, non a promettere quella rosa.</p>
+    </div>
+
+    {cfg.mod && <div className="card">
+      <h2>Blocchi difensivi</h2>
+      <p className="hint">Portiere + 3 difensori della stessa squadra: media voto attesa e costo a listino.
+        Prendere il blocco intero significa che ogni clean sheet ti conta quattro volte.</p>
+      <div className="tw" style={{border:0}}>
+        <table><thead><tr><th>Squadra</th><th>Media</th><th>Costo</th><th>Liberi</th><th>Uomini</th></tr></thead>
+        <tbody>{blk.map(b=><tr key={b.sq} data-gone={b.liberi<4?'1':'0'}>
+          <td><b>{b.sq}</b></td>
+          <td className="price">{b.media.toFixed(2)}</td>
+          <td className="n">{b.costo}</td>
+          <td className="n">{b.liberi}/4</td>
+          <td style={{fontSize:12,color:'var(--muted)',whiteSpace:'normal'}}>{b.men.map(p=>p.nome).join(', ')}</td>
+        </tr>)}</tbody></table>
+      </div>
+    </div>}
+
+    <div className="card">
+      <h2>La rosa che comprerebbe</h2>
+      {ROLES.map(R=>{
+        const r=mia.roles[R];
+        return <div key={R} style={{marginBottom:12}}>
+          <div className="row" style={{justifyContent:'space-between',marginBottom:4}}>
+            <b><Tag r={R}/> {ROLENAME[R]}</b>
+            <span className="num" style={{color:'var(--muted)'}}>{r.spesa} cr · {Math.round(r.pts)} pt</span>
+          </div>
+          {r.tit.map(p=><div key={p.id} className="row" style={{justifyContent:'space-between',padding:'3px 0'}}>
+            <span>{p.nome} <span className="pteam">{p.squadra}</span></span>
+            <span className="row">
+              <span className="price">{p.prezzo}</span>
+              <button className="star" data-on={p.tgt?'1':'0'} onClick={()=>upd(p.id,{tgt:p.tgt?0:1})}>★</button>
+            </span>
+          </div>)}
+          {r.pan.length>0&&<div className="hint" style={{margin:'2px 0 0'}}>
+            panchina a 1 credito: {r.pan.map(p=>p.nome).join(', ')}</div>}
+        </div>;
+      })}
+      <p className="hint" style={{marginBottom:0}}>Tocca ★ per portarti questi nomi tra gli obiettivi dell'asta.</p>
+    </div>
+  </>;
+}
+
 /* ============================== TAB: LISTONE ============================== */
 function Listone({M,cfg,upd}){
   const [role,setRole]=useState('A');
@@ -710,7 +884,9 @@ function Listone({M,cfg,upd}){
       <table>
         <thead><tr>
           <th>★</th><th>Giocatore</th>{th('fascia','F')}{th('prezzo','Prezzo')}{th('live','Ora')}
-          {th('fp','Punti')}{th('vor','+Sost.')}<th>FM</th><th>Pres</th><th>R</th>{th('qt','Qt.')}<th>Preso da</th>
+          {th('fp','Punti')}{th('vor','+Sost.')}<th>FM</th>
+          {cfg.mod&&(role==='P'||role==='D')&&<th>MV</th>}
+          <th>Pres</th><th>R</th>{th('qt','Qt.')}<th>Preso da</th>
         </tr></thead>
         <tbody>
           {rows.map(p=><tr key={p.id} data-gone={p.owner?'1':'0'} data-mine={p.owner===cfg.teams[0]?'1':'0'}>
@@ -723,6 +899,9 @@ function Listone({M,cfg,upd}){
             <td className="n">{Math.round(p.vor)}</td>
             <td className="n"><input className="cellinput" type="number" step="0.05" value={p.fmA}
                 onChange={e=>upd(p.id,{ovrFm:e.target.value===''?null:+e.target.value})}/></td>
+            {cfg.mod&&(role==='P'||role==='D')&&<td className="n">
+              <input className="cellinput" type="number" step="0.05" value={p.mvA}
+                onChange={e=>upd(p.id,{ovrMv:e.target.value===''?null:+e.target.value})}/></td>}
             <td className="n"><input className="cellinput" type="number" step="1" value={p.presA}
                 onChange={e=>upd(p.id,{ovrPres:e.target.value===''?null:+e.target.value})}/></td>
             <td><input type="checkbox" checked={p.rig} onChange={e=>upd(p.id,{rig:e.target.checked})}/></td>
@@ -854,7 +1033,19 @@ function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,se
         <Field label="Squadre"><Num value={nTeams} onChange={setTeams} min={2}/></Field>
         <Field label="Crediti"><Num value={cfg.budget} onChange={v=>setCfg({...cfg,budget:v||1})} min={1}/></Field>
         <Field label="Bonus rigorista"><Num value={cfg.rigBonus} step={0.05} onChange={v=>setCfg({...cfg,rigBonus:v})}/></Field>
+        <Field label="Modificatore difesa">
+          <select className="f" value={cfg.mod?'1':'0'} onChange={e=>setCfg({...cfg,mod:e.target.value==='1'})}>
+            <option value="1">Attivo</option><option value="0">Non attivo</option>
+          </select></Field>
       </div>
+      {cfg.mod && <>
+        <p className="hint" style={{marginTop:12}}>Il modificatore premia la <b>media voto</b> del blocco portiere + 3 difensori,
+          non la fantamedia. Qui imposti quanti punti vale ogni 0,25 di media in più: sulla tabella standard è 1,
+          ma <b>controlla il regolamento della tua lega</b> perché le soglie cambiano da lega a lega.</p>
+        <div className="grid g4">
+          <Field label="Punti ogni +0,25"><Num value={cfg.modK} step={0.25} onChange={v=>setCfg({...cfg,modK:v})}/></Field>
+        </div>
+      </>}
       <p className="hint" style={{marginTop:12}}>Slot in rosa e quanti ne schieri ogni giornata. I titolari definiscono il
         <b> livello del sostituto</b>: con {nTeams} squadre e {cfg.starters.C} centrocampisti titolari, il {nTeams*cfg.starters.C}° centrocampista
         è il "gratis" con cui confrontare tutti gli altri.</p>
