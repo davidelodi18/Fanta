@@ -348,12 +348,12 @@ function parseDemo(){
 const DEFCFG={
   teams:['Io','Squadra 2','Squadra 3','Squadra 4','Squadra 5','Squadra 6','Squadra 7','Squadra 8'],
   budget:500, slots:{P:3,D:8,C:8,A:6}, starters:{P:1,D:4,C:4,A:3}, rigBonus:0.4,
-  mod:true, modK:1, alloc:{P:9,D:26,C:25,A:40}
+  mod:true, modK:1, gamma:0.85, tetto:45, alloc:{P:9,D:26,C:25,A:40}
 };
 
 /* ============================== MODELLO ============================== */
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
-const FMR={P:[5.0,6.2],D:[5.6,6.9],C:[5.8,7.9],A:[5.9,8.8]};   // fantamedia attesa: fondo → top del ruolo
+const FMR={P:[5.0,6.0],D:[5.6,6.7],C:[5.8,7.4],A:[5.9,8.1]};   // fantamedia attesa: fondo → top del ruolo
 const PRR={P:[24,34],D:[22,33],C:[22,33],A:[21,33]};            // presenze attese: fondo → top
 const MVR={P:[5.65,6.30],D:[5.70,6.35],C:[5.80,6.45],A:[5.75,6.40]}; // media voto attesa (serve al modificatore)
 
@@ -431,17 +431,19 @@ function valuate(players,cfg){
     g.forEach((p,i)=>{p.rank=i+1; p.repl=repl; p.vor=Math.max(0,p.fp-repl);});
   });
 
-  const sumVOR=ps.reduce((s,p)=>s+p.vor,0)||1;
-  ps.forEach(p=>{p.prezzo=Math.max(1,Math.round(1+p.vor/sumVOR*surplusPool));});
+  const G=cfg.gamma||1;
+  ps.forEach(p=>{p.w=Math.pow(p.vor,G);});
+  const sumW=ps.reduce((s,p)=>s+p.w,0)||1;
+  ps.forEach(p=>{p.prezzo=Math.max(1,Math.round(1+p.w/sumW*surplusPool));});
 
   // --- mercato live: inflazione su ciò che resta ---
   const taken=ps.filter(p=>p.owner);
   const spent=taken.reduce((s,p)=>s+(p.paid||0),0);
   const remCred=pool-spent, remSeats=seats-taken.length;
   const remSurplus=Math.max(0,remCred-remSeats);
-  const remVOR=ps.filter(p=>!p.owner).reduce((s,p)=>s+p.vor,0)||1;
-  ps.forEach(p=>{p.live=p.owner?p.paid:Math.max(1,Math.round(1+p.vor/remVOR*remSurplus));});
-  const infl=(remSurplus/remVOR)/(surplusPool/sumVOR);
+  const remW=ps.filter(p=>!p.owner).reduce((s,p)=>s+p.w,0)||1;
+  ps.forEach(p=>{p.live=p.owner?p.paid:Math.max(1,Math.round(1+p.w/remW*remSurplus));});
+  const infl=(remSurplus/remW)/(surplusPool/sumW);
 
   // --- fasce: taglio sui 4 salti di prezzo più grandi, per ruolo ---
   ROLES.forEach(R=>{
@@ -461,7 +463,7 @@ function valuate(players,cfg){
             maxBid:Math.max(0,cfg.budget-sp-Math.max(0,left-1))};
   });
 
-  return {ps,pool,seats,spent,remCred,remSeats,infl,teamState,slotTot,surplusPool,sumVOR};
+  return {ps,pool,seats,spent,remCred,remSeats,infl,teamState,slotTot,surplusPool,sumVOR:sumW};
 }
 
 /* ============================== SIMULATORE STRATEGIE ============================== */
@@ -473,8 +475,40 @@ const PRESET={
   'Difesa low cost': {P:5,D:8,C:30,A:57}
 };
 
-/* Compra la rosa migliore possibile con una data ripartizione del budget.
-   Solo i titolari fanno punti: la panchina si riempie a 1 credito. */
+/* Zaino: la MIGLIORE combinazione di nTit giocatori entro il budget,
+   non la più avida. Il tetto impedisce di bruciare il reparto su un nome solo. */
+function bestRoster(pool,nTit,budget,tetto){
+  const items=pool.filter(p=>p.prezzo<=tetto).slice(0,90);
+  if(!items.length||nTit<=0) return [];
+  const B=Math.max(nTit,Math.round(budget));
+  const NEG=-1e9;
+  const dp=[],ch=[],pb=[];
+  for(let k=0;k<=nTit;k++){
+    dp.push(new Float64Array(B+1).fill(NEG));
+    ch.push(new Int32Array(B+1).fill(-1));
+    pb.push(new Int32Array(B+1).fill(-1));
+  }
+  dp[0].fill(0);
+  items.forEach((p,i)=>{
+    const c=Math.max(1,p.prezzo);
+    for(let k=nTit;k>=1;k--){
+      for(let b=B;b>=c;b--){
+        const prev=dp[k-1][b-c];
+        if(prev>NEG/2&&prev+p.fp>dp[k][b]){
+          dp[k][b]=prev+p.fp; ch[k][b]=i; pb[k][b]=b-c;
+        }
+      }
+    }
+  });
+  let bb=-1,best=NEG;
+  for(let b=0;b<=B;b++) if(dp[nTit][b]>best){best=dp[nTit][b];bb=b;}
+  if(bb<0) return [];
+  const out=[];
+  let k=nTit,b=bb;
+  while(k>0&&ch[k][b]>=0){ out.push(items[ch[k][b]]); const nb=pb[k][b]; k--; b=nb; }
+  return out.sort((a,b)=>b.fp-a.fp);
+}
+
 function simula(ps,cfg,alloc){
   const out={roles:{},pts:0,spent:0};
   ROLES.forEach(R=>{
@@ -482,13 +516,11 @@ function simula(ps,cfg,alloc){
     const bench=nSlot-nTit;
     const roleBud=Math.round(cfg.budget*alloc[R]/100);
     const titBud=Math.max(nTit, roleBud-bench);
+    const tetto=Math.max(2,Math.round(titBud*(cfg.tetto||100)/100));
     const pool=ps.filter(p=>p.ruolo===R&&!p.owner).sort((a,b)=>b.fp-a.fp);
-    const tit=[]; let sp=0;
-    for(const p of pool){
-      if(tit.length>=nTit) break;
-      const rem=nTit-tit.length;
-      if(sp+p.prezzo<=titBud-(rem-1)){tit.push(p);sp+=p.prezzo;}
-    }
+    let tit=bestRoster(pool,nTit,titBud,tetto);
+    if(tit.length<nTit) tit=bestRoster(pool,nTit,titBud,titBud); // se il tetto è troppo stretto
+    const sp=tit.reduce((s,p)=>s+p.prezzo,0);
     const rest=pool.filter(p=>!tit.includes(p)).sort((a,b)=>a.prezzo-b.prezzo||b.fp-a.fp);
     const pan=rest.slice(0,bench);
     const spPan=pan.reduce((s,p)=>s+p.prezzo,0);
@@ -854,6 +886,16 @@ function Strategia({M,cfg,setCfg,upd}){
         {Object.keys(PRESET).map(k=><button key={k} className="btn ghost sm"
           onClick={()=>setCfg({...cfg,alloc:PRESET[k]})}>{k}</button>)}
       </div>
+      <div className="grid g2" style={{marginTop:12}}>
+        <Field label="Tetto per giocatore (% del reparto)">
+          <Num value={cfg.tetto} onChange={v=>setCfg({...cfg,tetto:clamp(v||10,10,100)})}/></Field>
+        <Field label="Concentrazione prezzi">
+          <Num value={cfg.gamma} step={0.05} onChange={v=>setCfg({...cfg,gamma:clamp(v||0.5,0.5,1.3)})}/></Field>
+      </div>
+      <p className="hint" style={{marginTop:8,marginBottom:0}}>
+        Il <b>tetto</b> impedisce al piano di bruciare un reparto su un nome solo: al 45% nessun titolare può costare
+        più di quasi metà del suo reparto. La <b>concentrazione</b> sotto 1 appiattisce i prezzi verso il centro
+        (i top costano meno, le fasce medie di più); sopra 1 li polarizza. Alzala se nella tua lega i big vanno alle stelle.</p>
     </div>
 
     <div className="bidbox">
