@@ -137,6 +137,18 @@ td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
 .bar i{display:block;height:100%;background:var(--petrol)}
 .bar i[data-over="1"]{background:var(--warn)}
 
+.cons{font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;
+  border:1px solid;border-radius:20px;padding:1px 7px;white-space:nowrap}
+.brow{display:flex;align-items:center;gap:8px;width:100%;text-align:left;background:none;
+  border:0;border-bottom:1px solid #EEF1ED;padding:8px 2px}
+.brow:last-child{border-bottom:0}
+.brow:hover,.brow:focus{background:var(--surface2)}
+.brow[data-gone="1"]{opacity:.35}
+.brow .g{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rolebar{display:flex;gap:6px;margin-bottom:8px}
+.rolebar button{flex:1;border:1px solid var(--line);background:var(--surface2);border-radius:8px;
+  padding:7px 0;font-weight:600;font-size:13px;color:var(--muted)}
+.rolebar button[data-on="1"]{background:var(--petrol);color:#fff;border-color:var(--petrol)}
 .sug{position:absolute;left:0;right:0;top:100%;background:#fff;border:1px solid var(--line);border-radius:0 0 8px 8px;
   max-height:250px;overflow-y:auto;z-index:20;box-shadow:0 8px 20px rgba(20,40,50,.13)}
 .sug button{display:flex;width:100%;gap:8px;align-items:center;text-align:left;background:none;border:0;padding:8px 10px;border-bottom:1px solid #EEF1ED}
@@ -416,7 +428,7 @@ function valuate(players,cfg){
     const g=ps.filter(p=>p.ruolo===R).sort((a,b)=>b.fp-a.fp);
     const idx=Math.min(g.length-1, nT*cfg.starters[R]);
     const repl=g.length?g[idx].fp:0;
-    g.forEach(p=>{p.repl=repl; p.vor=Math.max(0,p.fp-repl);});
+    g.forEach((p,i)=>{p.rank=i+1; p.repl=repl; p.vor=Math.max(0,p.fp-repl);});
   });
 
   const sumVOR=ps.reduce((s,p)=>s+p.vor,0)||1;
@@ -521,6 +533,23 @@ function readSheet(ab){
 const Tag=({r})=><span className={'tag '+r}>{r}</span>;
 const Fascia=({f})=> f&&f<5 ? <span className="fas" data-t={f}>F{f}</span> : <span className="fas">—</span>;
 
+/* Verdetto su un giocatore, dato dove sei con budget e slot */
+function consiglio(p,ctx){
+  const {myT,cfg,piano}=ctx;
+  if(p.owner) return {l:p.owner===cfg.teams[0]?'Mio':'Preso',c:'#9AA7AE'};
+  if(myT.byR[p.ruolo]>=cfg.slots[p.ruolo]) return {l:'Ruolo pieno',c:'#9AA7AE'};
+  if(p.live>myT.maxBid)                    return {l:'Fuori budget',c:'#CF3327'};
+  if(p.tgt)                                return {l:'Obiettivo',c:'#D99A0B'};
+  if(piano.has(p.id))                      return {l:'Nel piano',c:'#D99A0B'};
+  if(p.vor<=0)                             return {l:'Da 1 credito',c:'#9AA7AE'};
+  if(p.rank<=cfg.teams.length*cfg.starters[p.ruolo]) return {l:'Titolare',c:'#2E9E5B'};
+  return {l:'Riserva',c:'#2F6FD0'};
+}
+const Cons=({p,ctx})=>{
+  const c=consiglio(p,ctx);
+  return <span className="cons" style={{color:c.c,borderColor:c.c}}>{c.l}</span>;
+};
+
 function Field({label,children}){return <div><label className="f">{label}</label>{children}</div>;}
 function Num({value,onChange,step=1,min=0}){
   return <input className="f num" type="number" step={step} min={min} value={value}
@@ -619,7 +648,13 @@ function Asta({M,cfg,upd,me}){
   const [sel,setSel]=useState(null);
   const [bid,setBid]=useState('');
   const [team,setTeam]=useState(me);
-  const boxRef=useRef(null);
+  const [board,setBoard]=useState('P');
+  const [ord,setOrd]=useState('cons');
+
+  const myT=M.teamState.find(t=>t.name===me);
+  const pianoSim=useMemo(()=>simula(M.ps,cfg,cfg.alloc),[M.ps,cfg]);
+  const piano=useMemo(()=>new Set(ROLES.flatMap(R=>pianoSim.roles[R].tit.map(p=>p.id))),[pianoSim]);
+  const ctx={myT,cfg,piano};
 
   const free=M.ps.filter(p=>!p.owner);
   const hits=q.length>1
@@ -628,29 +663,42 @@ function Asta({M,cfg,upd,me}){
     : [];
   const P=sel?M.ps.find(x=>x.id===sel.id):null;
 
-  const myT=M.teamState.find(t=>t.name===me);
+  function pick(p){ setSel(p); setQ(p.nome); setBid(String(p.live)); setBoard(p.ruolo);
+    window.scrollTo({top:0,behavior:'smooth'}); }
+
   const roleFull=P?myT.byR[P.ruolo]>=cfg.slots[P.ruolo]:false;
-  const maxTech=P?Math.min(myT.maxBid, myT.credits):0;
+  const maxTech=P?Math.min(myT.maxBid,myT.credits):0;
 
   function assign(){
     if(!P) return;
-    const price=bid===''?P.live:+bid;
-    upd(P.id,{owner:team,paid:Math.max(1,price)});
+    const price=bid===''?P.live:Math.max(1,parseInt(bid,10)||1);
+    upd(P.id,{owner:team,paid:price});
     setSel(null);setQ('');setBid('');setTeam(me);
   }
+
+  // tabellone del ruolo scelto
+  const lista=M.ps.filter(p=>p.ruolo===board)
+    .sort((a,b)=> ord==='qt' ? (b.qt-a.qt) : (b.live-a.live))
+    .filter(p=>!p.owner);
+
+  // chi serve a te, adesso: i migliori del piano ancora liberi e alla tua portata
+  const consigliati=ROLES.flatMap(R=>
+      myT.byR[R]>=cfg.slots[R]?[]:pianoSim.roles[R].tit)
+    .filter(p=>!p.owner&&p.live<=myT.maxBid)
+    .sort((a,b)=>b.vor/Math.max(1,b.live)-a.vor/Math.max(1,a.live)).slice(0,8);
 
   return <>
     <div className="card" style={{position:'relative',overflow:'visible'}}>
       <h2>Chi è all'asta?</h2>
       <p className="hint">Cerca il giocatore chiamato, poi registra a chi va e a quanto.</p>
-      <div style={{position:'relative'}} ref={boxRef}>
+      <div style={{position:'relative'}}>
         <input className="f" placeholder="Nome o squadra…" value={q}
           onChange={e=>{setQ(e.target.value);setSel(null);}} autoComplete="off"/>
         {hits.length>0&&!sel&&<div className="sug">
-          {hits.map(p=><button key={p.id} onClick={()=>{setSel(p);setQ(p.nome);setBid('');}}>
+          {hits.map(p=><button key={p.id} onClick={()=>pick(p)}>
             <Tag r={p.ruolo}/>
             <span style={{flex:1}}><b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
-            <Fascia f={p.fascia}/>
+            <Cons p={p} ctx={ctx}/>
             <span className="price" style={{minWidth:34}}>{p.live}</span>
           </button>)}
         </div>}
@@ -662,9 +710,9 @@ function Asta({M,cfg,upd,me}){
         <div className="bidhead">
           <div>
             <div className="bidname">{P.nome}</div>
-            <div className="bidmeta">{P.squadra} · {ROLENAME[P.ruolo]} · fascia {P.fascia<5?P.fascia:'fondo'}</div>
+            <div className="bidmeta">{P.squadra} · {ROLENAME[P.ruolo]} · {P.rank}° del ruolo</div>
           </div>
-          <Fascia f={P.fascia}/>
+          <Cons p={P} ctx={ctx}/>
         </div>
         <div style={{marginTop:12}}>
           <div className="bignum">{P.live}<small> crediti · prezzo di mercato ora</small></div>
@@ -688,21 +736,56 @@ function Asta({M,cfg,upd,me}){
 
       <div className="card">
         <div className="grid g2">
-          <Field label="Prezzo finale"><Num value={bid===''?P.live:bid} onChange={setBid} min={1}/></Field>
-          <Field label="Va a">
+          <div><label className="f">Prezzo finale</label>
+            <input className="f num" type="number" inputMode="numeric" min="1" value={bid}
+              onChange={e=>setBid(e.target.value)} onFocus={e=>e.target.select()}/></div>
+          <div><label className="f">Va a</label>
             <select className="f" value={team} onChange={e=>setTeam(e.target.value)}>
               {cfg.teams.map(t=><option key={t}>{t}</option>)}
-            </select>
-          </Field>
+            </select></div>
         </div>
         {bid!==''&&+bid>P.live&&<p className="hint" style={{color:'var(--warn)',marginTop:8}}>
           {Math.round((+bid/P.live-1)*100)}% sopra il prezzo di mercato — accettabile solo se è un tuo obiettivo dichiarato.</p>}
         <div className="row" style={{marginTop:10}}>
           <button className="btn gold" onClick={assign}>Assegna</button>
-          <button className="btn ghost" onClick={()=>{setSel(null);setQ('');}}>Annulla</button>
+          <button className="btn ghost" onClick={()=>{setSel(null);setQ('');setBid('');}}>Annulla</button>
         </div>
       </div>
     </>}
+
+    <div className="card">
+      <h2>Consigliati per te adesso</h2>
+      <p className="hint">I migliori che ti servono davvero: reparti ancora scoperti, alla tua portata, ordinati per punti per credito.</p>
+      {consigliati.map(p=><button key={p.id} className="brow" onClick={()=>pick(p)}>
+        <Tag r={p.ruolo}/>
+        <span className="g"><b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
+        <Fascia f={p.fascia}/>
+        <span className="price" style={{minWidth:34}}>{p.live}</span>
+      </button>)}
+      {!consigliati.length&&<div className="empty">Nessun consiglio: o hai i reparti pieni, o non hai crediti per i titolari rimasti.</div>}
+    </div>
+
+    <div className="card">
+      <h2>Tabellone</h2>
+      <div className="rolebar">
+        {ROLES.map(R=><button key={R} data-on={board===R?'1':'0'} onClick={()=>setBoard(R)}>
+          {R} <span style={{fontWeight:400}}>{M.ps.filter(p=>p.ruolo===R&&!p.owner).length}</span></button>)}
+      </div>
+      <div className="row" style={{marginBottom:6}}>
+        <button className={'btn sm '+(ord==='cons'?'':'ghost')} onClick={()=>setOrd('cons')}>Prezzo consigliato</button>
+        <button className={'btn sm '+(ord==='qt'?'':'ghost')} onClick={()=>setOrd('qt')}>Quotazione listino</button>
+      </div>
+      <div style={{maxHeight:460,overflowY:'auto'}}>
+        {lista.map(p=><button key={p.id} className="brow" onClick={()=>pick(p)}>
+          <Tag r={p.ruolo}/>
+          <span className="g"><b>{p.nome}</b> <span className="pteam">{p.squadra}</span></span>
+          <Cons p={p} ctx={ctx}/>
+          <Fascia f={p.fascia}/>
+          <span className="price" style={{minWidth:34}}>{ord==='qt'?p.qt:p.live}</span>
+        </button>)}
+        {!lista.length&&<div className="empty">Nessun {ROLENAME[board].toLowerCase()} ancora libero.</div>}
+      </div>
+    </div>
 
     <div className="card">
       <h2>Chi resta, per fascia</h2>
