@@ -356,6 +356,8 @@ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const FMR={P:[5.0,6.0],D:[5.6,6.7],C:[5.8,7.4],A:[5.9,8.1]};   // fantamedia attesa: fondo → top del ruolo
 const PRR={P:[24,34],D:[22,33],C:[22,33],A:[21,33]};            // presenze attese: fondo → top
 const MVR={P:[5.65,6.30],D:[5.70,6.35],C:[5.80,6.45],A:[5.75,6.40]}; // media voto attesa (serve al modificatore)
+const STATO={'':1,'ball':0.85,'inf':0.72,'out':0.45};
+const STATOLAB={'':'—','ball':'ballottaggio','inf':'infortunato','out':'lungodegente'};
 
 function project(players,cfg){
   const out=players.map(p=>({...p}));
@@ -371,12 +373,14 @@ function project(players,cfg){
       const mPr=PRR[R][0]+pct*(PRR[R][1]-PRR[R][0]);
       const mMv=MVR[R][0]+pct*(MVR[R][1]-MVR[R][0]);
       const hasSt=p.pv>0&&p.fm>0;
-      p.baseFm = hasSt ? 0.62*p.fm+0.38*mFm : mFm;
-      p.baseMv = hasSt&&p.mv>0 ? 0.65*p.mv+0.35*mMv : mMv;
-      p.basePres = Math.round(hasSt ? 0.55*clamp(p.pv,0,38)+0.45*mPr : mPr);
+      // quanto fidarsi dei dati: 3 presenze pesano poco, 30 pesano molto
+      const k=hasSt?clamp(p.pv,0,38)/(clamp(p.pv,0,38)+10):0;
+      p.baseFm = hasSt ? k*p.fm+(1-k)*mFm : mFm;
+      p.baseMv = hasSt&&p.mv>0 ? k*p.mv+(1-k)*mMv : mMv;
+      p.basePres = Math.round(hasSt&&p.pv>=10 ? 0.55*clamp(p.pv,0,38)+0.45*mPr : mPr);
       p.fmA = p.ovrFm!=null?p.ovrFm:+p.baseFm.toFixed(2);
       p.mvA = p.ovrMv!=null?p.ovrMv:+p.baseMv.toFixed(2);
-      p.presA = p.ovrPres!=null?p.ovrPres:p.basePres;
+      p.presA = Math.max(1,Math.round((p.ovrPres!=null?p.ovrPres:p.basePres)*(STATO[p.stato||'']||1)));
       p.modPts = 0;
       p.puri = (p.fmA + (p.rig?cfg.rigBonus:0)) * p.presA;
       p.fp = p.puri;
@@ -530,6 +534,123 @@ function simula(ps,cfg,alloc){
   return out;
 }
 
+/* Quanto ti serve mettere da parte per completare la rosa secondo il piano.
+   È la differenza tra "posso spendere" e "posso spendere davvero". */
+function fabbisogno(myT,cfg,pianoSim){
+  const need={}; let reserve=0;
+  ROLES.forEach(R=>{
+    const slotsLeft=Math.max(0,cfg.slots[R]-myT.byR[R]);
+    const nTit=Math.min(cfg.starters[R],cfg.slots[R]);
+    const titLeft=Math.max(0,nTit-Math.min(myT.byR[R],nTit));
+    const benchLeft=Math.max(0,slotsLeft-titLeft);
+    const prezzi=pianoSim.roles[R].tit.map(p=>p.live).sort((a,b)=>a-b).slice(0,titLeft);
+    while(prezzi.length<titLeft) prezzi.push(1);
+    const costo=prezzi.reduce((s,v)=>s+v,0)+benchLeft;
+    need[R]={slotsLeft,titLeft,benchLeft,costo,minTit:prezzi.length?prezzi[0]:1};
+    reserve+=costo;
+  });
+  return {need,reserve};
+}
+
+/* Frontiera di un ruolo: per ogni budget, i migliori nTit titolari acquistabili.
+   Restituisce i punti per ogni livello di spesa e come ricostruire la scelta. */
+function frontiera(pool,nTit,B,tetto){
+  const items=pool.filter(p=>p.live<=tetto).slice(0,70);
+  const NEG=-1e9;
+  const dp=[],ch=[],pb=[];
+  for(let k=0;k<=nTit;k++){
+    dp.push(new Float64Array(B+1).fill(NEG));
+    ch.push(new Int32Array(B+1).fill(-1));
+    pb.push(new Int32Array(B+1).fill(-1));
+  }
+  dp[0].fill(0);
+  items.forEach((p,i)=>{
+    const c=Math.max(1,p.live);
+    for(let k=nTit;k>=1;k--)
+      for(let b=B;b>=c;b--){
+        const prev=dp[k-1][b-c];
+        if(prev>NEG/2&&prev+p.fp>dp[k][b]){dp[k][b]=prev+p.fp;ch[k][b]=i;pb[k][b]=b-c;}
+      }
+  });
+  // migliore cumulato: con budget b posso sempre spendere meno
+  const val=new Float64Array(B+1).fill(NEG), arg=new Int32Array(B+1).fill(-1);
+  let best=NEG,ab=-1;
+  for(let b=0;b<=B;b++){
+    if(dp[nTit][b]>best){best=dp[nTit][b];ab=b;}
+    val[b]=best; arg[b]=ab;
+  }
+  const pick=b=>{
+    let bb=arg[Math.max(0,Math.min(B,b))]; if(bb<0) return [];
+    const out=[];let k=nTit;
+    while(k>0&&ch[k][bb]>=0){out.push(items[ch[k][bb]]);const nb=pb[k][bb];k--;bb=nb;}
+    return out.sort((x,y)=>y.fp-x.fp);
+  };
+  return {val,pick,ok:best>NEG/2};
+}
+
+/* Rosa completa ottimale: distribuisce da sola il budget tra i reparti.
+   forzati = giocatori che vuoi dentro per forza (il "pilastro" del piano). */
+function pianoGlobale(ps,cfg,opt={}){
+  const forz=opt.forzati||[];
+  const mieiIds=new Set((opt.owned||[]).map(p=>p.id));
+  const libere={}; let benchTot=0, speso=0;
+  const fix={};
+  ROLES.forEach(R=>{
+    const nTit=Math.min(cfg.starters[R],cfg.slots[R]);
+    const own=(opt.owned||[]).filter(p=>p.ruolo===R);
+    const f=forz.filter(p=>p.ruolo===R&&!mieiIds.has(p.id));
+    fix[R]=[...own.slice(0,nTit),...f].slice(0,nTit);
+    speso+=f.reduce((s,p)=>s+p.live,0);
+    libere[R]=Math.max(0,nTit-fix[R].length);
+    benchTot+=Math.max(0,cfg.slots[R]-nTit-Math.max(0,own.length-nTit));
+  });
+  const B=Math.max(0,(opt.budget!=null?opt.budget:cfg.budget)-speso-benchTot);
+  const tetto=Math.max(3,Math.round(cfg.budget*(cfg.tetto||45)/100));
+
+  const fr={};
+  ROLES.forEach(R=>{
+    const pool=ps.filter(p=>p.ruolo===R&&!p.owner&&!forz.some(f=>f.id===p.id))
+                 .sort((a,b)=>b.fp-a.fp);
+    fr[R]=libere[R]>0?frontiera(pool,libere[R],B,tetto):null;
+  });
+
+  // combino i reparti: quale ripartizione del budget rende di più
+  let cur=new Float64Array(B+1).fill(-1e9); cur[0]=0;
+  const scelte=[];
+  ROLES.forEach(R=>{
+    const nx=new Float64Array(B+1).fill(-1e9), sp=new Int32Array(B+1).fill(0);
+    for(let b=0;b<=B;b++){
+      if(!fr[R]){ nx[b]=cur[b]; continue; }
+      let best=-1e9,bx=0;
+      for(let x=0;x<=b;x++){
+        if(cur[b-x]<-1e8||fr[R].val[x]<-1e8) continue;
+        const v=cur[b-x]+fr[R].val[x];
+        if(v>best){best=v;bx=x;}
+      }
+      nx[b]=best; sp[b]=bx;
+    }
+    scelte.push({R,sp}); cur=nx;
+  });
+
+  let bb=B; while(bb>0&&cur[bb]<-1e8) bb--;
+  const alloc={},roles={};
+  let resto=bb;
+  for(let i=scelte.length-1;i>=0;i--){
+    const {R,sp}=scelte[i];
+    const x=fr[R]?sp[resto]:0;
+    alloc[R]=x; resto-=x;
+  }
+  let pts=0,costo=0;
+  ROLES.forEach(R=>{
+    const scelti=fr[R]?fr[R].pick(alloc[R]):[];
+    const tit=[...fix[R],...scelti];
+    const c=tit.reduce((s,p)=>s+(mieiIds.has(p.id)?(p.paid||0):p.live),0);
+    roles[R]={tit,spesa:c,pts:tit.reduce((s,p)=>s+p.fp,0)};
+    pts+=roles[R].pts; costo+=c;
+  });
+  return {roles,pts,costo:costo+benchTot,benchTot,alloc};
+}
+
 /* ============================== IMPORT XLSX ============================== */
 const norm=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');
 function readSheet(ab){
@@ -567,10 +688,12 @@ const Fascia=({f})=> f&&f<5 ? <span className="fas" data-t={f}>F{f}</span> : <sp
 
 /* Verdetto su un giocatore, dato dove sei con budget e slot */
 function consiglio(p,ctx){
-  const {myT,cfg,piano}=ctx;
+  const {myT,cfg,piano,sost}=ctx;
   if(p.owner) return {l:p.owner===cfg.teams[0]?'Mio':'Preso',c:'#9AA7AE'};
   if(myT.byR[p.ruolo]>=cfg.slots[p.ruolo]) return {l:'Ruolo pieno',c:'#9AA7AE'};
   if(p.live>myT.maxBid)                    return {l:'Fuori budget',c:'#CF3327'};
+  if(sost&&p.live>sost(p))                 return {l:'Oltre il piano',c:'#CF3327'};
+  if(p.stato==='out')                      return {l:'Lungodegente',c:'#9AA7AE'};
   if(p.tgt)                                return {l:'Obiettivo',c:'#D99A0B'};
   if(piano.has(p.id))                      return {l:'Nel piano',c:'#D99A0B'};
   if(p.vor<=0)                             return {l:'Da 1 credito',c:'#9AA7AE'};
@@ -639,7 +762,7 @@ function App(){
     fr.readAsArrayBuffer(file);
   }
 
-  const T=[['asta','Asta live'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
+  const T=[['asta','Asta live'],['piani','Piani'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
 
   return <div className="app">
     <header className="top">
@@ -664,6 +787,7 @@ function App(){
     {msg && <div className="banner" onClick={()=>setMsg('')}>{msg} <span style={{color:'#8A7A50'}}>(tocca per chiudere)</span></div>}
 
     {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me}/>}
+    {tab==='piani'&& <Piani M={M} cfg={cfg} me={me} upd={upd}/>}
     {tab==='strategia'&& <Strategia M={M} cfg={cfg} setCfg={setCfg} upd={upd}/>}
     {tab==='listone'&& <Listone M={M} cfg={cfg} upd={upd}/>}
     {tab==='rosa'   && <Rosa M={M} cfg={cfg} me={me} upd={upd}/>}
@@ -686,7 +810,14 @@ function Asta({M,cfg,upd,me}){
   const myT=M.teamState.find(t=>t.name===me);
   const pianoSim=useMemo(()=>simula(M.ps,cfg,cfg.alloc),[M.ps,cfg]);
   const piano=useMemo(()=>new Set(ROLES.flatMap(R=>pianoSim.roles[R].tit.map(p=>p.id))),[pianoSim]);
-  const ctx={myT,cfg,piano};
+  const F=useMemo(()=>fabbisogno(myT,cfg,pianoSim),[myT,cfg,pianoSim]);
+  const sost=p=>{
+    const n=F.need[p.ruolo];
+    if(!n||n.slotsLeft<=0) return 0;
+    const rimborso=n.titLeft>0?n.minTit:1;
+    return Math.max(1,Math.min(myT.credits-(F.reserve-rimborso),myT.maxBid));
+  };
+  const ctx={myT,cfg,piano,sost};
 
   const free=M.ps.filter(p=>!p.owner);
   const hits=q.length>1
@@ -700,6 +831,7 @@ function Asta({M,cfg,upd,me}){
 
   const roleFull=P?myT.byR[P.ruolo]>=cfg.slots[P.ruolo]:false;
   const maxTech=P?Math.min(myT.maxBid,myT.credits):0;
+  const rivali=P?M.teamState.filter(t=>t.name!==me&&t.byR[P.ruolo]<cfg.slots[P.ruolo]&&t.credits>1):[];
 
   function assign(){
     if(!P) return;
@@ -756,12 +888,18 @@ function Asta({M,cfg,upd,me}){
         <div className="gaugelab"><span>deflazione</span>
           <span>{M.infl>=1?'i big stanno andando a sconto':'i big sono strapagati'}</span><span>inflazione</span></div>
         <div className="bidgrid">
-          <div><span>listino base</span><b>{P.prezzo}</b></div>
+          <div><span>max sostenibile</span><b style={{color:'var(--gold)'}}>{roleFull?'—':sost(P)}</b></div>
           <div><span>max tecnico</span><b>{roleFull?'—':maxTech}</b></div>
+          <div><span>listino base</span><b>{P.prezzo}</b></div>
           <div><span>punti attesi</span><b>{Math.round(P.fp)}</b></div>
           <div><span>sopra il sostituto</span><b>+{Math.round(P.vor)}</b></div>
           {cfg.mod&&P.modPts>0&&<div><span>da modificatore</span><b>+{Math.round(P.modPts)}</b></div>}
         </div>
+        <div className="gaugelab" style={{marginTop:10,justifyContent:'flex-start',gap:14}}>
+          <span>{rivali.length} avversari cercano ancora un {ROLENAME[P.ruolo].toLowerCase().slice(0,-1)}</span>
+          {P.stato&&<span style={{color:'#E9A2A2'}}>{STATOLAB[P.stato]}</span>}
+        </div>
+        {P.note&&<div style={{marginTop:8,fontSize:12.5,color:'#BBD3D6'}}>{P.note}</div>}
       </div>
 
       {roleFull && <div className="banner">Hai già riempito gli slot da {ROLENAME[P.ruolo].toLowerCase()}.</div>}
@@ -778,6 +916,19 @@ function Asta({M,cfg,upd,me}){
         </div>
         {bid!==''&&+bid>P.live&&<p className="hint" style={{color:'var(--warn)',marginTop:8}}>
           {Math.round((+bid/P.live-1)*100)}% sopra il prezzo di mercato — accettabile solo se è un tuo obiettivo dichiarato.</p>}
+        <div className="grid g2" style={{marginTop:10}}>
+          <div><label className="f">Stato</label>
+            <select className="f" value={P.stato||''} onChange={e=>upd(P.id,{stato:e.target.value})}>
+              {Object.keys(STATOLAB).map(k=><option key={k} value={k}>{STATOLAB[k]}</option>)}
+            </select></div>
+          <div><label className="f">Rigorista</label>
+            <select className="f" value={P.rig?'1':'0'} onChange={e=>upd(P.id,{rig:e.target.value==='1'})}>
+              <option value="0">no</option><option value="1">sì</option>
+            </select></div>
+        </div>
+        <div style={{marginTop:8}}><label className="f">Nota</label>
+          <input className="f" value={P.note||''} placeholder="ballottaggio col secondo, rientra a ottobre…"
+            onChange={e=>upd(P.id,{note:e.target.value})}/></div>
         <div className="row" style={{marginTop:10}}>
           <button className="btn gold" onClick={assign}>Assegna</button>
           <button className="btn ghost" onClick={()=>{setSel(null);setQ('');setBid('');}}>Annulla</button>
@@ -832,15 +983,34 @@ function Asta({M,cfg,upd,me}){
     </div>
 
     <div className="card">
-      <h2>Crediti degli avversari</h2>
-      <p className="hint">Chi ha ancora budget può rilanciarti. Chi è a secco no.</p>
-      <div className="row">
-        {M.teamState.map(t=><div key={t.name} className="teamchip" data-me={t.name===me?'1':'0'}
-            data-low={t.credits<=t.slotsLeft+3?'1':'0'}>
-          <b>{t.name}</b>
-          <span>{t.credits} cr · {t.slotsLeft} slot · max {t.maxBid}</span>
-        </div>)}
+      <h2>Cosa serve agli avversari</h2>
+      <p className="hint">Slot ancora vuoti per ruolo. Se sei l'unico a cui manca un reparto, lì compri a un credito.
+        In rosso chi ha finito i crediti: non può più rilanciarti.</p>
+      <div className="tw" style={{border:0}}>
+        <table><thead><tr><th>Squadra</th><th>Cr.</th><th>Max</th>
+          {ROLES.map(R=><th key={R} style={{textAlign:'right'}}>{R}</th>)}</tr></thead>
+        <tbody>{M.teamState.map(t=><tr key={t.name} data-mine={t.name===me?'1':'0'}>
+          <td><b>{t.name}</b></td>
+          <td className="n" style={{color:t.credits<=t.slotsLeft+3?'var(--warn)':'inherit'}}>{t.credits}</td>
+          <td className="n" style={{color:'var(--muted)'}}>{t.maxBid}</td>
+          {ROLES.map(R=>{const l=cfg.slots[R]-t.byR[R];
+            return <td key={R} className="n" style={{color:l?'inherit':'#C9D0C8',
+              fontWeight:l&&P&&R===P.ruolo?700:400}}>{l||'✓'}</td>;})}
+        </tr>)}</tbody></table>
       </div>
+    </div>
+
+    <div className="card">
+      <h2>Il tuo fabbisogno</h2>
+      <p className="hint">Crediti da tenere da parte per completare la rosa secondo il piano:
+        <b className="num"> {F.reserve}</b> su {myT.credits} disponibili.</p>
+      {ROLES.map(R=>{const n=F.need[R]; if(!n.slotsLeft) return null;
+        return <div key={R} className="row" style={{justifyContent:'space-between',padding:'4px 0'}}>
+          <span><Tag r={R}/> {n.slotsLeft} da prendere <span className="pteam">
+            {n.titLeft} titolari · {n.benchLeft} panchina</span></span>
+          <span className="num">{n.costo} cr</span>
+        </div>;})}
+      {!ROLES.some(R=>F.need[R].slotsLeft)&&<div className="empty">Rosa completa.</div>}
     </div>
 
     <div className="card">
@@ -854,6 +1024,98 @@ function Asta({M,cfg,upd,me}){
           </span>
         </div>)}
       {!M.ps.some(p=>p.owner)&&<div className="empty">Nessun giocatore assegnato. Il mercato parte da qui.</div>}
+    </div>
+  </>;
+}
+
+/* ============================== TAB: PIANI ============================== */
+function Piani({M,cfg,me,upd}){
+  const [ap,setAp]=useState(0);
+  const myT=M.teamState.find(t=>t.name===me);
+
+  const piani=useMemo(()=>{
+    const base={budget:myT.credits,owned:myT.own};
+    const ott=pianoGlobale(M.ps,cfg,base);
+    const out=[{nome:'Piano ottimale',sub:'nessun vincolo: la rosa che rende di più',p:ott}];
+    // pilastri alternativi: i big ancora liberi, uno alla volta
+    const big=M.ps.filter(p=>!p.owner&&p.vor>0&&p.live<=myT.credits*0.45)
+      .sort((a,b)=>b.live-a.live).slice(0,20);
+    const visti=new Set(), anchors=[];
+    for(const p of big){
+      if(visti.has(p.ruolo)&&anchors.filter(a=>a.ruolo===p.ruolo).length>=2) continue;
+      visti.add(p.ruolo); anchors.push(p);
+      if(anchors.length>=6) break;
+    }
+    anchors.forEach(a=>{
+      const p=pianoGlobale(M.ps,cfg,{...base,forzati:[a]});
+      out.push({nome:'Se prendi '+a.nome,sub:`${a.nome} a ${a.live} crediti, poi il meglio col resto`,p,anchor:a});
+    });
+    return out.sort((x,y)=>y.p.pts-x.p.pts);
+  },[M.ps,cfg,myT.credits,myT.own.length]);
+
+  const sel=piani[Math.min(ap,piani.length-1)];
+  const top=piani[0].p.pts;
+
+  return <>
+    <div className="card">
+      <h2>Piani di riserva</h2>
+      <p className="hint">Ogni piano è una rosa completa e comprabile con i crediti che hai adesso
+        ({myT.credits}), ai prezzi di mercato correnti. Cambiano il pilastro: se all'asta ne perdi uno,
+        sai già su cosa ripiegare e quanto ti costa in punti.</p>
+      {piani.map((pl,i)=><button key={pl.nome} className="brow" onClick={()=>setAp(i)}
+          style={{background:i===ap?'var(--surface2)':'none'}}>
+        <span className="g"><b>{pl.nome}</b> <span className="pteam">{pl.sub}</span></span>
+        <span className="price">{Math.round(pl.p.pts)}</span>
+        <span className="num" style={{fontSize:12,color:i===0?'var(--ok)':'var(--muted)',minWidth:42,textAlign:'right'}}>
+          {i===0?'migliore':Math.round(pl.p.pts-top)}</span>
+      </button>)}
+    </div>
+
+    <div className="bidbox">
+      <div className="bidmeta">{sel.nome}</div>
+      <div className="bignum">{Math.round(sel.p.pts)}<small> punti attesi dai titolari</small></div>
+      <div className="bidgrid">
+        {ROLES.map(R=><div key={R}><span>{R} · {sel.p.roles[R].tit.length} tit.</span>
+          <b>{sel.p.roles[R].spesa}</b></div>)}
+        <div><span>panchina</span><b>{sel.p.benchTot}</b></div>
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>I giocatori di questo piano</h2>
+      <p className="hint">Il ripartitore del budget è automatico: decide da solo quanto vale la pena
+        spendere per reparto, invece di seguire percentuali fisse.</p>
+      {ROLES.map(R=>{
+        const r=sel.p.roles[R];
+        return <div key={R} style={{marginBottom:12}}>
+          <div className="row" style={{justifyContent:'space-between',marginBottom:3}}>
+            <b><Tag r={R}/> {ROLENAME[R]}</b>
+            <span className="num" style={{color:'var(--muted)'}}>{r.spesa} cr · {Math.round(r.pts)} pt</span>
+          </div>
+          {r.tit.map(p=><div key={p.id} className="row" style={{justifyContent:'space-between',padding:'3px 0'}}>
+            <span>{p.owner===me&&'✓ '}{p.nome} <span className="pteam">{p.squadra}</span>
+              {p.stato&&<span className="pteam" style={{color:'var(--warn)'}}> {STATOLAB[p.stato]}</span>}</span>
+            <span className="row">
+              <span className="price">{p.owner===me?p.paid:p.live}</span>
+              <button className="star" data-on={p.tgt?'1':'0'} onClick={()=>upd(p.id,{tgt:p.tgt?0:1})}>★</button>
+            </span>
+          </div>)}
+          {!r.tit.length&&<div className="hint" style={{margin:0}}>nessuno acquistabile con questo budget</div>}
+        </div>;
+      })}
+      <div className="row" style={{borderTop:'1px solid var(--line)',paddingTop:10}}>
+        <button className="btn gold" onClick={()=>ROLES.forEach(R=>sel.p.roles[R].tit
+          .forEach(p=>{if(!p.owner) upd(p.id,{tgt:1});}))}>Segna tutti come obiettivi</button>
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Come si legge</h2>
+      <p className="hint" style={{marginBottom:0}}>La colonna a destra nella lista dei piani è quanto <b>perdi</b>
+        rispetto al piano migliore. Se ripiegare costa 10 punti su 2000, il pilastro non è indispensabile
+        e non devi svenarti per averlo. Se ne costa 150, quello è il giocatore su cui giocarti l'asta.
+        I piani si ricalcolano dopo ogni acquisto: durante l'asta questa scheda è sempre aggiornata su
+        chi è ancora libero e su quanto ti resta.</p>
     </div>
   </>;
 }
@@ -1011,7 +1273,7 @@ function Listone({M,cfg,upd}){
           <th>★</th><th>Giocatore</th>{th('fascia','F')}{th('prezzo','Prezzo')}{th('live','Ora')}
           {th('fp','Punti')}{th('vor','+Sost.')}<th>FM</th>
           {cfg.mod&&(role==='P'||role==='D')&&<th>MV</th>}
-          <th>Pres</th><th>R</th>{th('qt','Qt.')}<th>Preso da</th>
+          <th>Pres</th><th>R</th><th>Stato</th>{th('qt','Qt.')}<th>Preso da</th>
         </tr></thead>
         <tbody>
           {rows.map(p=><tr key={p.id} data-gone={p.owner?'1':'0'} data-mine={p.owner===cfg.teams[0]?'1':'0'}>
@@ -1030,6 +1292,9 @@ function Listone({M,cfg,upd}){
             <td className="n"><input className="cellinput" type="number" step="1" value={p.presA}
                 onChange={e=>upd(p.id,{ovrPres:e.target.value===''?null:+e.target.value})}/></td>
             <td><input type="checkbox" checked={p.rig} onChange={e=>upd(p.id,{rig:e.target.checked})}/></td>
+            <td><select className="cellinput" style={{width:74}} value={p.stato||''}
+                onChange={e=>upd(p.id,{stato:e.target.value})}>
+              {Object.keys(STATOLAB).map(k=><option key={k} value={k}>{STATOLAB[k]}</option>)}</select></td>
             <td className="n" style={{color:'var(--muted)'}}>{p.qt}</td>
             <td style={{fontSize:12,color:'var(--muted)'}}>{p.owner?`${p.owner} · ${p.paid}`:'—'}</td>
           </tr>)}
@@ -1044,6 +1309,23 @@ function Listone({M,cfg,upd}){
 function Rosa({M,cfg,me,upd}){
   const t=M.teamState.find(x=>x.name===me);
   const nT=cfg.teams.length;
+
+  function esporta(){
+    const r=['Ruolo,Nome,Squadra,Pagato,Valore,PuntiAttesi'];
+    ROLES.forEach(R=>t.own.filter(p=>p.ruolo===R).sort((a,b)=>b.fp-a.fp)
+      .forEach(p=>r.push([R,p.nome,p.squadra,p.paid,p.prezzo,Math.round(p.fp)].join(','))));
+    r.push('','TOTALE,,,'+t.spent+',,'+Math.round(t.own.reduce((s,p)=>s+p.fp,0)));
+    const b=new Blob(['\ufeff'+r.join('\n')],{type:'text/csv'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(b); a.download='mia-rosa.csv'; a.click();
+  }
+  function esportaAsta(){
+    const r=['Squadra,Ruolo,Nome,Club,Prezzo,Valore'];
+    M.ps.filter(p=>p.owner).forEach(p=>r.push([p.owner,p.ruolo,p.nome,p.squadra,p.paid,p.prezzo].join(',')));
+    const b=new Blob(['\ufeff'+r.join('\n')],{type:'text/csv'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(b); a.download='asta-completa.csv'; a.click();
+  }
 
   // allocazione consigliata: quota del budget che il modello assegna ai titolari di ogni ruolo
   const alloc={}; let tot=0;
@@ -1095,6 +1377,10 @@ function Rosa({M,cfg,me,upd}){
         </div>;
       })}
       {!mine.length&&<div className="empty">Rosa vuota. Assegnati il primo giocatore dalla scheda Asta.</div>}
+      {mine.length>0&&<div className="row" style={{marginTop:10,borderTop:'1px solid var(--line)',paddingTop:10}}>
+        <button className="btn ghost sm" onClick={esporta}>Esporta la mia rosa</button>
+        <button className="btn ghost sm" onClick={esportaAsta}>Esporta l'asta completa</button>
+      </div>}
     </div>
 
     <div className="card">
@@ -1107,6 +1393,76 @@ function Rosa({M,cfg,me,upd}){
       {!M.ps.some(p=>p.tgt&&!p.owner)&&<div className="empty">Segna i tuoi obiettivi con ★ nel Listone.</div>}
     </div>
   </>;
+}
+
+/* ============================== SYNC (Firebase REST) ============================== */
+const SKEY='fantasta_sync';
+function loadSync(){ try{return JSON.parse(localStorage.getItem(SKEY))||{};}catch(e){return {};} }
+function saveSync(s){ try{localStorage.setItem(SKEY,JSON.stringify(s));}catch(e){} }
+
+async function token(s){
+  const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+s.apiKey,
+    {method:'POST',headers:{'Content-Type':'application/json'},
+     body:JSON.stringify({email:s.email,password:s.pass,returnSecureToken:true})});
+  const d=await r.json();
+  if(!d.idToken) throw new Error(d.error?.message||'login fallito');
+  return d.idToken;
+}
+const nodo=(s,t)=>`${s.url.replace(/\/$/,'')}/${s.path||'hubPersonale/asta'}/${s.code||'default'}.json?auth=${t}`;
+
+async function pushCloud(s,data){
+  const t=await token(s);
+  const r=await fetch(nodo(s,t),{method:'PUT',body:JSON.stringify({...data,ts:Date.now()})});
+  if(!r.ok) throw new Error('scrittura rifiutata ('+r.status+')');
+}
+async function pullCloud(s){
+  const t=await token(s);
+  const r=await fetch(nodo(s,t));
+  if(!r.ok) throw new Error('lettura rifiutata ('+r.status+')');
+  const d=await r.json();
+  if(!d) throw new Error('nessun dato salvato su questo codice');
+  return d;
+}
+
+function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg}){
+  const [s,setS]=useState(loadSync);
+  const [st,setSt]=useState('');
+  const up=(k,v)=>{const n={...s,[k]:v};setS(n);saveSync(n);};
+  const pronto=s.apiKey&&s.url&&s.email&&s.pass;
+
+  async function go(dir){
+    setSt(dir==='up'?'Invio…':'Scarico…');
+    try{
+      if(dir==='up'){ await pushCloud(s,{cfg,players}); setSt('Salvato sul cloud alle '+new Date().toLocaleTimeString('it-IT')); }
+      else{ const d=await pullCloud(s);
+        if(d.cfg) setCfg({...DEFCFG,...d.cfg});
+        if(d.players){ setPlayers(d.players); setDemo(false); }
+        setSt('Scaricato (salvato il '+new Date(d.ts||Date.now()).toLocaleString('it-IT')+')'); }
+    }catch(e){ setSt('Errore: '+e.message); }
+  }
+
+  return <div className="card">
+    <h2>Sync PC ↔ telefono</h2>
+    <p className="hint">Usa il tuo Realtime Database. Prepari l'asta dal computer, premi <i>Salva</i>,
+      e dal telefono premi <i>Carica</i>: stessi giocatori, stesse impostazioni, stessi obiettivi.
+      Le credenziali restano su questo dispositivo.</p>
+    <div className="grid g2">
+      <Field label="databaseURL"><input className="f" value={s.url||''} placeholder="https://…firebasedatabase.app"
+        onChange={e=>up('url',e.target.value)}/></Field>
+      <Field label="apiKey"><input className="f" value={s.apiKey||''} onChange={e=>up('apiKey',e.target.value)}/></Field>
+      <Field label="email"><input className="f" value={s.email||''} onChange={e=>up('email',e.target.value)}/></Field>
+      <Field label="password"><input className="f" type="password" value={s.pass||''} onChange={e=>up('pass',e.target.value)}/></Field>
+      <Field label="nodo"><input className="f" value={s.path||'hubPersonale/asta'} onChange={e=>up('path',e.target.value)}/></Field>
+      <Field label="codice asta"><input className="f" value={s.code||'default'} onChange={e=>up('code',e.target.value)}/></Field>
+    </div>
+    <div className="row" style={{marginTop:10}}>
+      <button className="btn" disabled={!pronto} onClick={()=>go('up')}>Salva sul cloud</button>
+      <button className="btn ghost" disabled={!pronto} onClick={()=>{
+        if(confirm('Sostituisco i dati locali con quelli del cloud?')) go('down');}}>Carica dal cloud</button>
+    </div>
+    {st&&<p className="hint" style={{marginTop:8,marginBottom:0,
+      color:st.startsWith('Errore')?'var(--warn)':'var(--ok)'}}>{st}</p>}
+  </div>;
 }
 
 /* ============================== TAB: SETUP ============================== */
@@ -1151,6 +1507,8 @@ function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,se
       </div>
       <p className="hint" style={{marginTop:9,marginBottom:0}}>{players.length} giocatori in archivio.</p>
     </div>
+
+    <Sync cfg={cfg} setCfg={setCfg} players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}/>
 
     <div className="card">
       <h2>Regole della lega</h2>
