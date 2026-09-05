@@ -761,7 +761,7 @@ function App(){
     tira();
     const iv=setInterval(tira,15000);
     return ()=>{vivo=false;clearInterval(iv);};
-  },[ready,auto,sync.code,sync.path]);
+  },[ready,auto,sync.code]);
 
   useEffect(()=>{(async()=>{
     const d=await store.load();
@@ -1440,42 +1440,62 @@ function Rosa({M,cfg,me,upd}){
   </>;
 }
 
-/* ============================== SYNC (Firebase REST) ============================== */
+/* ============================== SYNC (Firebase REST, senza credenziali) ============================== */
+const FB={
+  url:'https://fanta-asta-23598-default-rtdb.europe-west1.firebasedatabase.app',
+  apiKey:'AIzaSyDE2-8vuvt5nzs7a4IY3URa0BKezp9HmwA',
+  path:'asta'
+};
 const SKEY='fantasta_sync';
-function loadSync(){ try{return JSON.parse(localStorage.getItem(SKEY))||{};}catch(e){return {};} }
+function loadSync(){
+  let s={};
+  try{ s=JSON.parse(localStorage.getItem(SKEY))||{}; }catch(e){}
+  const q=new URLSearchParams(location.search).get('lega');
+  if(q) s.code=q;
+  if(!s.code) s.code='';
+  return s;
+}
 function saveSync(s){ try{localStorage.setItem(SKEY,JSON.stringify(s));}catch(e){} }
 
-let TOK={t:null,exp:0};
-async function token(s){
+/* accesso anonimo: se il progetto lo consente usa un token, altrimenti va senza */
+let TOK={t:null,exp:0,provato:false};
+async function token(){
   if(TOK.t&&Date.now()<TOK.exp) return TOK.t;
-  const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+s.apiKey,
-    {method:'POST',headers:{'Content-Type':'application/json'},
-     body:JSON.stringify({email:s.email,password:s.pass,returnSecureToken:true})});
-  const d=await r.json();
-  if(!d.idToken) throw new Error(d.error?.message||'login fallito');
-  TOK={t:d.idToken,exp:Date.now()+50*60*1000};
-  return d.idToken;
+  if(TOK.provato&&!TOK.t) return null;
+  TOK.provato=true;
+  try{
+    const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key='+FB.apiKey,
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({returnSecureToken:true})});
+    const d=await r.json();
+    if(d.idToken){ TOK={t:d.idToken,exp:Date.now()+50*60*1000,provato:true}; return d.idToken; }
+  }catch(e){}
+  return null;
 }
-const syncReady=s=>!!(s&&s.apiKey&&s.url&&s.email&&s.pass);
-const nodo=(s,t)=>`${s.url.replace(/\/$/,'')}/${s.path||'hubPersonale/asta'}/${s.code||'default'}.json?auth=${t}`;
+const syncReady=s=>!!(s&&s.code&&s.code.trim());
+async function nodo(s){
+  const t=await token();
+  return `${FB.url}/${FB.path}/${encodeURIComponent(s.code.trim())}.json`+(t?`?auth=${t}`:'');
+}
 
 async function pushCloud(s,data){
-  const t=await token(s);
-  const r=await fetch(nodo(s,t),{method:'PUT',body:JSON.stringify(data)});
-  if(!r.ok) throw new Error('scrittura rifiutata ('+r.status+')');
+  const r=await fetch(await nodo(s),{method:'PUT',body:JSON.stringify(data)});
+  if(!r.ok) throw new Error(r.status===401||r.status===403
+    ? 'il database non accetta scritture su questo nodo' : 'scrittura rifiutata ('+r.status+')');
 }
 async function pullCloud(s){
-  const t=await token(s);
-  const r=await fetch(nodo(s,t));
-  if(!r.ok) throw new Error('lettura rifiutata ('+r.status+')');
+  const r=await fetch(await nodo(s));
+  if(!r.ok) throw new Error(r.status===401||r.status===403
+    ? 'il database non accetta letture su questo nodo' : 'lettura rifiutata ('+r.status+')');
   const d=await r.json();
-  if(!d) throw new Error('nessun dato salvato su questo codice');
+  if(!d) throw new Error('nessun dato su questo codice lega');
   return d;
 }
 
 function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg,s,setS,st,setSt}){
   const up=(k,v)=>{const n={...s,[k]:v};setS(n);saveSync(n);};
   const pronto=syncReady(s);
+  const link=location.origin+location.pathname+'?lega='+encodeURIComponent((s.code||'').trim());
 
   async function go(dir){
     setSt(dir==='up'?'Invio…':'Scarico…');
@@ -1490,19 +1510,15 @@ function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg,s,setS,st,setSt}){
   }
 
   return <div className="card">
-    <h2>Sync PC ↔ telefono</h2>
-    <p className="hint">Compila i quattro campi una volta sola: da lì in poi l'app salva da sola dopo ogni
-      modifica e controlla ogni 15 secondi se l'altro dispositivo ha cambiato qualcosa. databaseURL e apiKey
-      sono nel <i>firebaseConfig</i> delle tue altre app. Le credenziali restano su questo dispositivo.</p>
-    <div className="grid g2">
-      <Field label="databaseURL"><input className="f" value={s.url||''} placeholder="https://…firebasedatabase.app"
-        onChange={e=>up('url',e.target.value)}/></Field>
-      <Field label="apiKey"><input className="f" value={s.apiKey||''} onChange={e=>up('apiKey',e.target.value)}/></Field>
-      <Field label="email"><input className="f" value={s.email||''} onChange={e=>up('email',e.target.value)}/></Field>
-      <Field label="password"><input className="f" type="password" value={s.pass||''} onChange={e=>up('pass',e.target.value)}/></Field>
-      <Field label="nodo"><input className="f" value={s.path||'hubPersonale/asta'} onChange={e=>up('path',e.target.value)}/></Field>
-      <Field label="codice asta"><input className="f" value={s.code||'default'} onChange={e=>up('code',e.target.value)}/></Field>
-    </div>
+    <h2>Sync tra dispositivi</h2>
+    <p className="hint">Scegli un codice lega e scrivilo uguale su ogni dispositivo: da lì in poi
+      l'app salva da sola dopo ogni modifica e si riallinea ogni 15 secondi. Niente account, niente password.</p>
+    <Field label="Codice lega">
+      <input className="f" value={s.code||''} placeholder="es. asta-lodi-2026"
+        onChange={e=>up('code',e.target.value.replace(/[^A-Za-z0-9_-]/g,'-'))}/>
+    </Field>
+    {pronto&&<p className="hint" style={{marginTop:8}}>Apri questo link sull'altro dispositivo e il codice si imposta da solo:<br/>
+      <span style={{wordBreak:'break-all',color:'var(--petrol)'}}>{link}</span></p>}
     <div className="row" style={{marginTop:10}}>
       <button className={'btn '+(s.auto!==false?'gold':'ghost')} disabled={!pronto}
         onClick={()=>up('auto',s.auto===false)}>
@@ -1511,11 +1527,11 @@ function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg,s,setS,st,setSt}){
       <button className="btn ghost sm" disabled={!pronto} onClick={()=>{
         if(confirm('Sostituisco i dati locali con quelli del cloud?')) go('down');}}>Carica ora</button>
     </div>
-    {!pronto&&<p className="hint" style={{marginTop:8,marginBottom:0}}>Mancano ancora dei campi.</p>}
+    {!pronto&&<p className="hint" style={{marginTop:8,marginBottom:0}}>Scegli un codice per attivare la sincronizzazione.</p>}
     {st&&<p className="hint" style={{marginTop:8,marginBottom:0,
       color:st.includes('Errore')||st.includes('fallito')?'var(--warn)':'var(--ok)'}}>{st}</p>}
-    <p className="hint" style={{marginTop:8,marginBottom:0}}>Vince sempre la modifica più recente.
-      Se all'asta usi due dispositivi insieme, tienine uno solo come quello che registra gli acquisti.</p>
+    <p className="hint" style={{marginTop:8,marginBottom:0}}>Vince sempre la modifica più recente:
+      all'asta tieni un solo dispositivo come quello che registra gli acquisti.</p>
   </div>;
 }
 
