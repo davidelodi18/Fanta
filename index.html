@@ -719,6 +719,49 @@ function App(){
   const [demo,setDemo]=useState(true);
   const [ready,setReady]=useState(false);
   const [msg,setMsg]=useState('');
+  const [sync,setSync]=useState(loadSync);
+  const [syncSt,setSyncSt]=useState('');
+  const stamp=useRef(0), skip=useRef(false), busy=useRef(false);
+
+  const auto=syncReady(sync)&&sync.auto!==false;
+
+  // scrive sul cloud dopo ogni modifica (con un attimo di respiro)
+  useEffect(()=>{
+    if(!ready) return;
+    if(skip.current){skip.current=false;return;}
+    stamp.current=Date.now();
+    if(!auto) return;
+    const mio=stamp.current;
+    const id=setTimeout(async()=>{
+      busy.current=true;
+      try{ await pushCloud(sync,{cfg,players,ts:mio});
+           setSyncSt('salvato '+new Date().toLocaleTimeString('it-IT'));
+      }catch(e){ setSyncSt('sync fallito: '+e.message); }
+      busy.current=false;
+    },2500);
+    return ()=>clearTimeout(id);
+  },[cfg,players,ready,auto]);
+
+  // controlla se l'altro dispositivo ha cambiato qualcosa
+  useEffect(()=>{
+    if(!ready||!auto) return;
+    let vivo=true;
+    const tira=async()=>{
+      if(busy.current) return;
+      try{
+        const d=await pullCloud(sync);
+        if(vivo&&d&&d.ts&&d.ts>stamp.current+1500){
+          skip.current=true; stamp.current=d.ts;
+          if(d.cfg) setCfg({...DEFCFG,...d.cfg});
+          if(d.players){setPlayers(d.players);setDemo(false);}
+          setSyncSt('aggiornato dall\'altro dispositivo alle '+new Date(d.ts).toLocaleTimeString('it-IT'));
+        }
+      }catch(e){}
+    };
+    tira();
+    const iv=setInterval(tira,15000);
+    return ()=>{vivo=false;clearInterval(iv);};
+  },[ready,auto,sync.code,sync.path]);
 
   useEffect(()=>{(async()=>{
     const d=await store.load();
@@ -775,6 +818,7 @@ function App(){
           <div className="tstat"><b className="num">{myState.credits}</b><span>miei crediti</span></div>
           <div className="tstat"><b className="num">{myState.slotsLeft}</b><span>slot liberi</span></div>
           <div className="tstat"><b className="num">{M.infl>=1?'+':''}{Math.round((M.infl-1)*100)}%</b><span>mercato</span></div>
+          {auto&&<div className="tstat"><b style={{fontSize:13}}>●</b><span>sync</span></div>}
         </div>
       </div>
       <nav className="tabs">
@@ -794,7 +838,8 @@ function App(){
     {tab==='setup'  && <Setup cfg={cfg} setCfg={setCfg} importFile={importFile} M={M}
                         reset={()=>{setPlayers(parseDemo());setDemo(true);setCfg(DEFCFG);}}
                         clearAuction={()=>setPlayers(ps=>ps.map(p=>({...p,owner:null,paid:null})))}
-                        players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}/>}
+                        players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}
+                        s={sync} setS={setSync} st={syncSt} setSt={setSyncSt}/>}
   </div>;
 }
 
@@ -1400,19 +1445,23 @@ const SKEY='fantasta_sync';
 function loadSync(){ try{return JSON.parse(localStorage.getItem(SKEY))||{};}catch(e){return {};} }
 function saveSync(s){ try{localStorage.setItem(SKEY,JSON.stringify(s));}catch(e){} }
 
+let TOK={t:null,exp:0};
 async function token(s){
+  if(TOK.t&&Date.now()<TOK.exp) return TOK.t;
   const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key='+s.apiKey,
     {method:'POST',headers:{'Content-Type':'application/json'},
      body:JSON.stringify({email:s.email,password:s.pass,returnSecureToken:true})});
   const d=await r.json();
   if(!d.idToken) throw new Error(d.error?.message||'login fallito');
+  TOK={t:d.idToken,exp:Date.now()+50*60*1000};
   return d.idToken;
 }
+const syncReady=s=>!!(s&&s.apiKey&&s.url&&s.email&&s.pass);
 const nodo=(s,t)=>`${s.url.replace(/\/$/,'')}/${s.path||'hubPersonale/asta'}/${s.code||'default'}.json?auth=${t}`;
 
 async function pushCloud(s,data){
   const t=await token(s);
-  const r=await fetch(nodo(s,t),{method:'PUT',body:JSON.stringify({...data,ts:Date.now()})});
+  const r=await fetch(nodo(s,t),{method:'PUT',body:JSON.stringify(data)});
   if(!r.ok) throw new Error('scrittura rifiutata ('+r.status+')');
 }
 async function pullCloud(s){
@@ -1424,16 +1473,15 @@ async function pullCloud(s){
   return d;
 }
 
-function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg}){
-  const [s,setS]=useState(loadSync);
-  const [st,setSt]=useState('');
+function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg,s,setS,st,setSt}){
   const up=(k,v)=>{const n={...s,[k]:v};setS(n);saveSync(n);};
-  const pronto=s.apiKey&&s.url&&s.email&&s.pass;
+  const pronto=syncReady(s);
 
   async function go(dir){
     setSt(dir==='up'?'Invio…':'Scarico…');
     try{
-      if(dir==='up'){ await pushCloud(s,{cfg,players}); setSt('Salvato sul cloud alle '+new Date().toLocaleTimeString('it-IT')); }
+      if(dir==='up'){ await pushCloud(s,{cfg,players,ts:Date.now()});
+        setSt('Salvato alle '+new Date().toLocaleTimeString('it-IT')); }
       else{ const d=await pullCloud(s);
         if(d.cfg) setCfg({...DEFCFG,...d.cfg});
         if(d.players){ setPlayers(d.players); setDemo(false); }
@@ -1443,9 +1491,9 @@ function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg}){
 
   return <div className="card">
     <h2>Sync PC ↔ telefono</h2>
-    <p className="hint">Usa il tuo Realtime Database. Prepari l'asta dal computer, premi <i>Salva</i>,
-      e dal telefono premi <i>Carica</i>: stessi giocatori, stesse impostazioni, stessi obiettivi.
-      Le credenziali restano su questo dispositivo.</p>
+    <p className="hint">Compila i quattro campi una volta sola: da lì in poi l'app salva da sola dopo ogni
+      modifica e controlla ogni 15 secondi se l'altro dispositivo ha cambiato qualcosa. databaseURL e apiKey
+      sono nel <i>firebaseConfig</i> delle tue altre app. Le credenziali restano su questo dispositivo.</p>
     <div className="grid g2">
       <Field label="databaseURL"><input className="f" value={s.url||''} placeholder="https://…firebasedatabase.app"
         onChange={e=>up('url',e.target.value)}/></Field>
@@ -1456,17 +1504,23 @@ function Sync({cfg,setCfg,players,setPlayers,setDemo,setMsg}){
       <Field label="codice asta"><input className="f" value={s.code||'default'} onChange={e=>up('code',e.target.value)}/></Field>
     </div>
     <div className="row" style={{marginTop:10}}>
-      <button className="btn" disabled={!pronto} onClick={()=>go('up')}>Salva sul cloud</button>
-      <button className="btn ghost" disabled={!pronto} onClick={()=>{
-        if(confirm('Sostituisco i dati locali con quelli del cloud?')) go('down');}}>Carica dal cloud</button>
+      <button className={'btn '+(s.auto!==false?'gold':'ghost')} disabled={!pronto}
+        onClick={()=>up('auto',s.auto===false)}>
+        {s.auto!==false?'Automatico attivo':'Automatico spento'}</button>
+      <button className="btn ghost sm" disabled={!pronto} onClick={()=>go('up')}>Salva ora</button>
+      <button className="btn ghost sm" disabled={!pronto} onClick={()=>{
+        if(confirm('Sostituisco i dati locali con quelli del cloud?')) go('down');}}>Carica ora</button>
     </div>
+    {!pronto&&<p className="hint" style={{marginTop:8,marginBottom:0}}>Mancano ancora dei campi.</p>}
     {st&&<p className="hint" style={{marginTop:8,marginBottom:0,
-      color:st.startsWith('Errore')?'var(--warn)':'var(--ok)'}}>{st}</p>}
+      color:st.includes('Errore')||st.includes('fallito')?'var(--warn)':'var(--ok)'}}>{st}</p>}
+    <p className="hint" style={{marginTop:8,marginBottom:0}}>Vince sempre la modifica più recente.
+      Se all'asta usi due dispositivi insieme, tienine uno solo come quello che registra gli acquisti.</p>
   </div>;
 }
 
 /* ============================== TAB: SETUP ============================== */
-function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,setDemo,setMsg}){
+function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,setDemo,setMsg,s,setS,st,setSt}){
   const [nTeams,setNTeams]=useState(cfg.teams.length);
   const fileRef=useRef();
 
@@ -1508,7 +1562,8 @@ function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,se
       <p className="hint" style={{marginTop:9,marginBottom:0}}>{players.length} giocatori in archivio.</p>
     </div>
 
-    <Sync cfg={cfg} setCfg={setCfg} players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}/>
+    <Sync cfg={cfg} setCfg={setCfg} players={players} setPlayers={setPlayers} setDemo={setDemo} setMsg={setMsg}
+      s={s} setS={setS} st={st} setSt={setSt}/>
 
     <div className="card">
       <h2>Regole della lega</h2>
