@@ -776,6 +776,19 @@ function App(){
 
   const upd=(id,patch)=>setPlayers(ps=>ps.map(p=>p.id===id?{...p,...patch}:p));
 
+  // storico per l'annulla rapido
+  const [storia,setStoria]=useState([]);
+  const assegna=(p,owner,paid)=>{
+    setStoria(h=>[{id:p.id,owner:p.owner,paid:p.paid},...h].slice(0,20));
+    upd(p.id,{owner,paid});
+  };
+  const annulla=()=>{
+    if(!storia.length) return;
+    const [ultimo,...resto]=storia;
+    upd(ultimo.id,{owner:ultimo.owner,paid:ultimo.paid});
+    setStoria(resto);
+  };
+
   function importFile(file){
     const fr=new FileReader();
     fr.onload=e=>{
@@ -805,7 +818,7 @@ function App(){
     fr.readAsArrayBuffer(file);
   }
 
-  const T=[['asta','Asta live'],['piani','Piani'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
+  const T=[['asta','Asta live'],['piani','Piani'],['prova','Prova'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
 
   return <div className="app">
     <header className="top">
@@ -830,8 +843,9 @@ function App(){
       carica il listone ufficiale (Quotazioni + Statistiche, .xlsx) da <i>Impostazioni</i> per lavorare sui numeri veri.</div>}
     {msg && <div className="banner" onClick={()=>setMsg('')}>{msg} <span style={{color:'#8A7A50'}}>(tocca per chiudere)</span></div>}
 
-    {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me}/>}
+    {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me} assegna={assegna} annulla={annulla} storia={storia}/>}
     {tab==='piani'&& <Piani M={M} cfg={cfg} me={me} upd={upd}/>}
+    {tab==='prova'&& <Prova M={M} cfg={cfg}/>}
     {tab==='strategia'&& <Strategia M={M} cfg={cfg} setCfg={setCfg} upd={upd}/>}
     {tab==='listone'&& <Listone M={M} cfg={cfg} upd={upd}/>}
     {tab==='rosa'   && <Rosa M={M} cfg={cfg} me={me} upd={upd}/>}
@@ -844,7 +858,7 @@ function App(){
 }
 
 /* ============================== TAB: ASTA ============================== */
-function Asta({M,cfg,upd,me}){
+function Asta({M,cfg,upd,me,assegna,annulla,storia}){
   const [q,setQ]=useState('');
   const [sel,setSel]=useState(null);
   const [bid,setBid]=useState('');
@@ -881,7 +895,7 @@ function Asta({M,cfg,upd,me}){
   function assign(){
     if(!P) return;
     const price=bid===''?P.live:Math.max(1,parseInt(bid,10)||1);
-    upd(P.id,{owner:team,paid:price});
+    assegna(P,team,price);
     setSel(null);setQ('');setBid('');setTeam(me);
   }
 
@@ -897,6 +911,12 @@ function Asta({M,cfg,upd,me}){
     .sort((a,b)=>b.vor/Math.max(1,b.live)-a.vor/Math.max(1,a.live)).slice(0,8);
 
   return <>
+    {storia.length>0&&<div className="card" style={{position:'sticky',top:96,zIndex:20,padding:'8px 12px',
+        display:'flex',alignItems:'center',gap:10,boxShadow:'0 3px 10px rgba(20,40,50,.08)'}}>
+      <span style={{flex:1,fontSize:12.5,color:'var(--muted)'}}>
+        Ultimo: <b style={{color:'var(--ink)'}}>{(M.ps.find(x=>x.id===storia[0].id)||{}).nome}</b></span>
+      <button className="btn ghost sm" onClick={annulla}>↶ Annulla</button>
+    </div>}
     <div className="card" style={{position:'relative',overflow:'visible'}}>
       <h2>Chi è all'asta?</h2>
       <p className="hint">Cerca il giocatore chiamato, poi registra a chi va e a quanto.</p>
@@ -950,6 +970,19 @@ function Asta({M,cfg,upd,me}){
       {roleFull && <div className="banner">Hai già riempito gli slot da {ROLENAME[P.ruolo].toLowerCase()}.</div>}
 
       <div className="card">
+        <div className="row" style={{marginBottom:10}}>
+          <button className="btn gold" style={{flex:'1 1 140px',padding:'13px'}}
+            disabled={roleFull} onClick={()=>assegna(P,me,bid===''?P.live:Math.max(1,parseInt(bid,10)||1))}>
+            È mio a {bid===''?P.live:bid}</button>
+          <button className="btn ghost" style={{flex:'1 1 140px',padding:'13px'}}
+            onClick={()=>{const alt=cfg.teams.find(t=>t!==me);
+              assegna(P,team===me?alt:team,bid===''?P.live:Math.max(1,parseInt(bid,10)||1));}}>
+            Va a {team===me?(cfg.teams[1]||'altri'):team}</button>
+        </div>
+        <div className="row" style={{marginBottom:10}}>
+          {[-5,-1,1,5,10].map(d=><button key={d} className="btn ghost sm" style={{minWidth:52,padding:'9px 0',flex:1}}
+            onClick={()=>setBid(String(Math.max(1,(bid===''?P.live:+bid)+d)))}>{d>0?'+':''}{d}</button>)}
+        </div>
         <div className="grid g2">
           <div><label className="f">Prezzo finale</label>
             <input className="f num" type="number" inputMode="numeric" min="1" value={bid}
@@ -1065,10 +1098,158 @@ function Asta({M,cfg,upd,me}){
           <span><Tag r={p.ruolo}/> <b>{p.nome}</b> <span className="pteam">{p.owner}</span></span>
           <span className="row">
             <span className="num" style={{color:p.paid>p.prezzo?'var(--warn)':'var(--ok)'}}>{p.paid} <small style={{color:'var(--muted)'}}>vs {p.prezzo}</small></span>
-            <button className="btn ghost sm" onClick={()=>upd(p.id,{owner:null,paid:null})}>annulla</button>
+            <button className="btn ghost sm" onClick={()=>assegna(p,null,null)}>annulla</button>
           </span>
         </div>)}
       {!M.ps.some(p=>p.owner)&&<div className="empty">Nessun giocatore assegnato. Il mercato parte da qui.</div>}
+    </div>
+  </>;
+}
+
+/* ============================== TAB: PROVA D'ASTA ============================== */
+function Prova({M,cfg}){
+  const [g,setG]=useState(null);
+  const [msg,setMsg]=useState('');
+
+  const slotTot=ROLES.reduce((s,R)=>s+cfg.slots[R],0);
+  const pool=useMemo(()=>M.ps.filter(p=>p.prezzo>=1).map(p=>({
+    id:p.id,nome:p.nome,squadra:p.squadra,ruolo:p.ruolo,prezzo:p.prezzo,fp:p.fp,fascia:p.fascia})),[M.ps]);
+
+  function nuova(){
+    const teams=cfg.teams.map((n,i)=>({n,cr:cfg.budget,byR:{P:0,D:0,C:0,A:0},own:[],io:i===0}));
+    setG({teams,presi:{},lotto:null,log:[],fine:false});
+    setMsg('');
+    setTimeout(()=>chiama({teams,presi:{},log:[],fine:false}),50);
+  }
+
+  const maxBot=(t,p)=>{
+    if(t.byR[p.ruolo]>=cfg.slots[p.ruolo]) return 0;
+    const slotLiberi=slotTot-t.own.length;
+    const tetto=t.cr-(slotLiberi-1);
+    const voglia=Math.round(p.prezzo*(0.75+Math.random()*0.55));
+    return Math.max(0,Math.min(tetto,voglia));
+  };
+
+  function chiama(stato){
+    const liberi=pool.filter(p=>!stato.presi[p.id]);
+    const vivi=stato.teams.filter(t=>t.own.length<slotTot);
+    if(!liberi.length||!vivi.length) { setG({...stato,fine:true,lotto:null}); return; }
+    // i lotti pesanti escono prima: scelta pesata sul prezzo
+    const top=[...liberi].sort((a,b)=>b.prezzo-a.prezzo).slice(0,40);
+    const p=top[Math.floor(Math.random()*Math.min(top.length,12))]||liberi[0];
+    const maxi=stato.teams.map(t=>t.io?0:maxBot(t,p));
+    const apre=stato.teams.findIndex((t,i)=>!t.io&&maxi[i]>0);
+    setG({...stato,lotto:{p,bid:1,leader:apre>=0?stato.teams[apre].n:cfg.teams[0],maxi}});
+  }
+
+  function risolvi(stato,l,vincitore,prezzo){
+    const teams=stato.teams.map(t=>t.n===vincitore
+      ? {...t,cr:t.cr-prezzo,byR:{...t.byR,[l.p.ruolo]:t.byR[l.p.ruolo]+1},own:[...t.own,{...l.p,paid:prezzo}]}
+      : t);
+    const presi={...stato.presi,[l.p.id]:vincitore};
+    const log=[{nome:l.p.nome,ruolo:l.p.ruolo,a:vincitore,prezzo,val:l.p.prezzo},...stato.log].slice(0,40);
+    const nuovo={...stato,teams,presi,log,lotto:null};
+    setG(nuovo);
+    setTimeout(()=>chiama(nuovo),600);
+  }
+
+  function rilancia(d){
+    const l=g.lotto, nuovoBid=l.bid+d;
+    const io=g.teams[0];
+    if(nuovoBid>io.cr-(slotTot-io.own.length-1)){ setMsg('Non puoi: ti servono crediti per riempire la rosa.'); return; }
+    if(io.byR[l.p.ruolo]>=cfg.slots[l.p.ruolo]){ setMsg('Hai già il reparto pieno.'); return; }
+    setMsg('');
+    // rispondono i bot
+    const sfid=g.teams.map((t,i)=>({t,i,max:l.maxi[i]})).filter(x=>!x.t.io&&x.max>nuovoBid);
+    if(!sfid.length){ risolvi(g,l,io.n,nuovoBid); return; }
+    const s=sfid[Math.floor(Math.random()*sfid.length)];
+    const su=Math.min(s.max,nuovoBid+1+Math.floor(Math.random()*3));
+    setG({...g,lotto:{...l,bid:su,leader:s.t.n}});
+  }
+
+  function passa(){
+    const l=g.lotto;
+    const ord=g.teams.map((t,i)=>({t,max:l.maxi[i]})).filter(x=>!x.t.io&&x.max>0).sort((a,b)=>b.max-a.max);
+    if(!ord.length){ risolvi(g,l,g.teams[0].n,1); return; }
+    const secondo=ord[1]?ord[1].max:0;
+    const prezzo=Math.max(l.bid,Math.min(ord[0].max,secondo+1));
+    setMsg('');
+    risolvi(g,l,ord[0].t.n,prezzo);
+  }
+
+  if(!g) return <div className="card">
+    <h2>Prova d'asta</h2>
+    <p className="hint">Un'asta finta contro {cfg.teams.length-1} avversari che chiamano giocatori e ti rilanciano
+      addosso. Serve ad allenarti a decidere in fretta e a vedere cosa succede alla tua rosa se paghi troppo.
+      Non tocca i dati dell'asta vera.</p>
+    <button className="btn gold" onClick={nuova}>Inizia la prova</button>
+  </div>;
+
+  const io=g.teams[0];
+  const l=g.lotto;
+  const slotLiberi=slotTot-io.own.length;
+  const maxTecnico=Math.max(1,io.cr-(slotLiberi-1));
+
+  return <>
+    <div className="bidbox">
+      {l ? <>
+        <div className="bidhead">
+          <div>
+            <div className="bidname">{l.p.nome}</div>
+            <div className="bidmeta">{l.p.squadra} · {ROLENAME[l.p.ruolo]} · vale {l.p.prezzo}</div>
+          </div>
+          <Fascia f={l.p.fascia}/>
+        </div>
+        <div style={{marginTop:12}}>
+          <div className="bignum">{l.bid}<small> offerta di {l.leader}</small></div>
+        </div>
+        <div className="bidgrid">
+          <div><span>tuoi crediti</span><b>{io.cr}</b></div>
+          <div><span>slot liberi</span><b>{slotLiberi}</b></div>
+          <div><span>max tecnico</span><b>{maxTecnico}</b></div>
+        </div>
+      </> : <>
+        <div className="bidmeta">{g.fine?'asta conclusa':'prossima chiamata…'}</div>
+        <div className="bignum">{io.own.length}<small> giocatori · {io.cr} crediti</small></div>
+      </>}
+    </div>
+
+    {l && <div className="card">
+      <div className="row">
+        {[1,2,5,10].map(d=><button key={d} className="btn" style={{flex:1,padding:'13px 0'}}
+          onClick={()=>rilancia(d)}>+{d}</button>)}
+      </div>
+      <button className="btn ghost" style={{width:'100%',marginTop:10,padding:'13px'}} onClick={passa}>
+        Passo</button>
+      {msg&&<p className="hint" style={{color:'var(--warn)',marginTop:8,marginBottom:0}}>{msg}</p>}
+    </div>}
+
+    <div className="card">
+      <h2>La tua rosa</h2>
+      <p className="hint">Punti attesi: <b className="num">{Math.round(io.own.reduce((s,p)=>s+p.fp,0))}</b>
+        {' · '}spesi {cfg.budget-io.cr} su {cfg.budget}</p>
+      {ROLES.map(R=>{
+        const g2=io.own.filter(p=>p.ruolo===R);
+        return <div key={R} className="row" style={{justifyContent:'space-between',padding:'3px 0'}}>
+          <span><Tag r={R}/> {g2.length}/{cfg.slots[R]} <span className="pteam">
+            {g2.map(p=>p.nome).join(', ')||'—'}</span></span>
+          <span className="num" style={{color:'var(--muted)'}}>{g2.reduce((s,p)=>s+p.paid,0)}</span>
+        </div>;
+      })}
+      <div className="row" style={{marginTop:10,borderTop:'1px solid var(--line)',paddingTop:10}}>
+        <button className="btn ghost sm" onClick={nuova}>Ricomincia</button>
+      </div>
+    </div>
+
+    <div className="card">
+      <h2>Come sta andando l'asta</h2>
+      {g.log.slice(0,14).map((x,i)=><div key={i} className="row"
+          style={{justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #EEF1ED'}}>
+        <span><Tag r={x.ruolo}/> <b>{x.nome}</b> <span className="pteam">{x.a}</span></span>
+        <span className="num" style={{color:x.prezzo>x.val?'var(--warn)':'var(--ok)'}}>
+          {x.prezzo} <small style={{color:'var(--muted)'}}>vs {x.val}</small></span>
+      </div>)}
+      {!g.log.length&&<div className="empty">Ancora nessuna assegnazione.</div>}
     </div>
   </>;
 }
