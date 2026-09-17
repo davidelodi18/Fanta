@@ -7,7 +7,6 @@
 <title>Los Conquistadores</title>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 :root{
@@ -104,7 +103,8 @@ label.file input{display:none}
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel" data-presets="react">
+<script>
+
 const {useState,useMemo,useEffect,useRef}=React;
 
 /* ===================== DATI DELLA LEGA ===================== */
@@ -172,60 +172,42 @@ function valuta(p,turno,classifica){
 }
 
 /* ===================== PEZZI DI INTERFACCIA ===================== */
-function Riga({p,dx,onClick}){
-  return <div className="pl" onClick={onClick}>
-    <span className={'tag '+p.ruolo}>{p.ruolo}</span>
-    <div className="mid">
-      <div className="n">{p.nome}</div>
-      <div className="s">{p.sq}{p.t?' · '+(p.t.casa?'':'a ')+p.t.avv:' · turno non impostato'}
-        {p.stato==='mai'?' · mai in campo':''}{p.stato==='poche'?' · 1 presenza':''}</div>
-    </div>
-    <div className="r">{dx||<><b>{p.voto?p.voto.toFixed(2):'—'}</b><span>atteso</span></>}</div>
-  </div>;
+/* ===================== INTERFACCIA (senza JSX, verificabile) ===================== */
+const h=React.createElement;
+const D=(cls,props,...kids)=>h('div',Object.assign({className:cls},props||{}),...kids);
+const S=(cls,props,...kids)=>h('span',Object.assign({className:cls},props||{}),...kids);
+const fmt=v=>(v||v===0)&&v!==null?Number(v).toFixed(2):'—';
+
+function Riga(props){
+  const p=props.p;
+  const sotto=p.sq+(p.t?' · '+(p.t.casa?'':'a ')+p.t.avv:' · turno non impostato')
+    +(p.stato==='mai'?' · mai in campo':'')+(p.stato==='poche'?' · 1 presenza':'');
+  return D('pl',{onClick:props.onClick,key:props.rkey},
+    S('tag '+p.ruolo,null,p.ruolo),
+    D('mid',null, D('n',null,p.nome), D('s',null,sotto)),
+    D('r',null, props.dx||[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},'atteso')])
+  );
 }
 
-function Campo({schierati,onSlot,modulo}){
-  const classificaLega=useMemo(()=>{
-    const t={}; SQUADRE.forEach(n=>t[n]={n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0});
-    Object.entries(risul).forEach(([g,arr])=>{
-      const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
-      (arr||[]).forEach((r,i)=>{
-        if(!turni[i]||r==null||r[0]==null||r[1]==null||r[0]===''||r[1]==='')return;
-        const [a,b]=turni[i], fa=+r[0], fb=+r[1];
-        if(isNaN(fa)||isNaN(fb))return;
-        t[a].g++;t[b].g++; t[a].ff+=fa;t[a].fs+=fb; t[b].ff+=fb;t[b].fs+=fa;
-        if(fa>fb){t[a].pt+=3;t[a].v++;t[b].s++;}
-        else if(fb>fa){t[b].pt+=3;t[b].v++;t[a].s++;}
-        else {t[a].pt++;t[b].pt++;t[a].p++;t[b].p++;}
-      });
-    });
-    return Object.values(t).sort((x,y)=>y.pt-x.pt||y.ff-x.ff||x.n.localeCompare(y.n));
-  },[risul]);
-
-  const [nd,nc,na]=modulo.split('-').map(Number);
-  const linee=[['A',na],['C',nc],['D',nd],['P',1]];
-  let i={P:0,D:0,C:0,A:0};
-  return <div className="pitch">
-    {linee.map(([R,n])=>
-      <div className="line" key={R}>
-        {Array.from({length:n}).map((_,k)=>{
-          const p=schierati[R][k];
-          return <button className="slot" key={R+k} onClick={()=>onSlot(R,k)}>
-            <div className={'shirt'+(p?'':' void')}>
-              {p?<>
-                <span className="fm">{p.voto?p.voto.toFixed(2):'—'}</span>
-                <span className="op">{p.t?(p.t.casa?'':'@')+p.t.avv.slice(0,7):'—'}</span>
-                {p.stato&&<i className={'dot '+(p.stato==='mai'?'b':'w')}/>}
-              </>:<span className="op">vuoto</span>}
-            </div>
-            <div className="nm">{p?p.nome:'—'}</div>
-          </button>;
-        })}
-      </div>)}
-  </div>;
+function Campo(props){
+  const parti=props.modulo.split('-').map(Number);
+  const linee=[['A',parti[2]],['C',parti[1]],['D',parti[0]],['P',1]];
+  return D('pitch',null, linee.map(function(l){
+    const R=l[0], n=l[1];
+    const slot=[];
+    for(let k=0;k<n;k++){
+      const p=props.schierati[R][k];
+      slot.push(h('button',{className:'slot',key:R+k,onClick:()=>props.onSlot(R,k)},
+        D('shirt'+(p?'':' void'),null,
+          p?S('fm',null,p.voto?fmt(p.voto):'—'):S('op',null,'vuoto'),
+          p?S('op',null,(p.t?(p.t.casa?'':'@')+p.t.avv.slice(0,7):'—')):null,
+          p&&p.stato?h('i',{className:'dot '+(p.stato==='mai'?'b':'w')}):null),
+        D('nm',null,p?p.nome:'—')));
+    }
+    return D('line',{key:R},slot);
+  }));
 }
 
-/* ===================== APP ===================== */
 function App(){
   const [vista,setVista]=useState('campo');
   const [gio,setGio]=useState(()=>mem.get('gio',CAL_DA));
@@ -233,8 +215,8 @@ function App(){
   const [turnoTxt,setTurnoTxt]=useState(()=>mem.get('turno',TURNO_DEF));
   const [classTxt,setClassTxt]=useState(()=>mem.get('class',CLASS_DEF));
   const [stats,setStats]=useState(()=>mem.get('stats',null));
-  const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));   // {giornata:{P:[id],D:[],C:[],A:[]}}
-  const [risul,setRisul]=useState(()=>mem.get('risul',{}));     // {giornata:[[fp casa,fp trasferta] x4]}
+  const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));
+  const [risul,setRisul]=useState(()=>mem.get('risul',{}));
   const [apri,setApri]=useState(null);
   const [msg,setMsg]=useState('');
 
@@ -246,39 +228,32 @@ function App(){
   useEffect(()=>{mem.set('risul',risul)},[risul]);
 
   const squadre=useSquadre(stats);
-  const turno=useMemo(()=>{const m={};
+
+  const turno=useMemo(()=>{
+    const m={};
     turnoTxt.split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
-      const [a,b]=r.split('-').map(x=>(x||'').trim());
-      if(a&&b){m[norm(a)]={avv:b,casa:true};m[norm(b)]={avv:a,casa:false};}});
-    return m;},[turnoTxt]);
-  const classifica=useMemo(()=>{const m={};
-    classTxt.split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>m[norm(s)]=i+1);return m;},[classTxt]);
+      const parti=r.split('-').map(x=>(x||'').trim());
+      if(parti[0]&&parti[1]){m[norm(parti[0])]={avv:parti[1],casa:true};m[norm(parti[1])]={avv:parti[0],casa:false};}
+    });
+    return m;
+  },[turnoTxt]);
+
+  const classifica=useMemo(()=>{
+    const m={};
+    classTxt.split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>{m[norm(s)]=i+1;});
+    return m;
+  },[classTxt]);
 
   const rosa=useMemo(()=>(squadre[MIA]||[]).map(p=>valuta(p,turno,classifica)),[squadre,turno,classifica]);
+
+  const turnoLega=useMemo(()=>CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length],[gio]);
   const sfida=useMemo(()=>{
-    const g=CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length];
-    const m=g.find(x=>x[0]===MIA||x[1]===MIA);
-    return m?{avv:m[0]===MIA?m[1]:m[0],casa:m[0]===MIA}:null;},[gio]);
+    const m=turnoLega.find(x=>x[0]===MIA||x[1]===MIA);
+    return m?{avv:m[0]===MIA?m[1]:m[0],casa:m[0]===MIA}:null;
+  },[turnoLega]);
 
-  const classificaLega=useMemo(()=>{
-    const t={}; SQUADRE.forEach(n=>t[n]={n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0});
-    Object.entries(risul).forEach(([g,arr])=>{
-      const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
-      (arr||[]).forEach((r,i)=>{
-        if(!turni[i]||r==null||r[0]==null||r[1]==null||r[0]===''||r[1]==='')return;
-        const [a,b]=turni[i], fa=+r[0], fb=+r[1];
-        if(isNaN(fa)||isNaN(fb))return;
-        t[a].g++;t[b].g++; t[a].ff+=fa;t[a].fs+=fb; t[b].ff+=fb;t[b].fs+=fa;
-        if(fa>fb){t[a].pt+=3;t[a].v++;t[b].s++;}
-        else if(fb>fa){t[b].pt+=3;t[b].v++;t[a].s++;}
-        else {t[a].pt++;t[b].pt++;t[a].p++;t[b].p++;}
-      });
-    });
-    return Object.values(t).sort((x,y)=>y.pt-x.pt||y.ff-x.ff||x.n.localeCompare(y.n));
-  },[risul]);
-
-  const [nd,nc,na]=modulo.split('-').map(Number);
-  const quanti={P:1,D:nd,C:nc,A:na};
+  const parti=modulo.split('-').map(Number);
+  const quanti={P:1,D:parti[0],C:parti[1],A:parti[2]};
 
   const consiglio=useMemo(()=>{
     const out={};
@@ -286,41 +261,75 @@ function App(){
       out[R]=rosa.filter(p=>p.ruolo===R&&p.voto!==null&&p.stato!=='mai')
                  .sort((a,b)=>b.voto-a.voto).slice(0,quanti[R]).map(p=>p.id);
     });
-    return out;},[rosa,modulo]);
+    return out;
+  },[rosa,modulo]);
 
   const mieScelte=scelta[gio]||null;
+
   const schierati=useMemo(()=>{
     const src=mieScelte||consiglio, out={};
     ROLES.forEach(R=>{
-      out[R]=Array.from({length:quanti[R]}).map((_,k)=>{
+      const arr=[];
+      for(let k=0;k<quanti[R];k++){
         const id=(src[R]||[])[k];
-        return id?rosa.find(p=>p.id===id)||null:null;});
+        arr.push(id?(rosa.find(p=>p.id===id)||null):null);
+      }
+      out[R]=arr;
     });
-    return out;},[mieScelte,consiglio,rosa,modulo]);
+    return out;
+  },[mieScelte,consiglio,rosa,modulo]);
 
-  const dentro=useMemo(()=>new Set(ROLES.flatMap(R=>schierati[R].filter(Boolean).map(p=>p.id))),[schierati]);
+  const dentro=useMemo(()=>{
+    const s=new Set();
+    ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)s.add(p.id);}));
+    return s;
+  },[schierati]);
+
   const panchina=useMemo(()=>rosa.filter(p=>!dentro.has(p.id))
-    .sort((a,b)=>ROLES.indexOf(a.ruolo)-ROLES.indexOf(b.ruolo)||(b.voto??-9)-(a.voto??-9)),[rosa,dentro]);
+    .sort((a,b)=>(ROLES.indexOf(a.ruolo)-ROLES.indexOf(b.ruolo))||((b.voto||0)-(a.voto||0))),[rosa,dentro]);
 
   const modif=useMemo(()=>{
-    const q=[...schierati.P,...schierati.D].filter(Boolean).map(p=>p.mv).filter(v=>v>0);
-    if(q.length<1+nd) return null;
+    const q=schierati.P.concat(schierati.D).filter(Boolean).map(p=>p.mv).filter(v=>v>0);
+    if(q.length<1+quanti.D) return null;
     const m=q.reduce((a,b)=>a+b,0)/q.length;
-    return {media:m,punti:modPunti(m)};},[schierati,nd]);
+    return {media:m,punti:modPunti(m)};
+  },[schierati,modulo]);
 
-  const somma=useMemo(()=>ROLES.flatMap(R=>schierati[R]).filter(Boolean)
-    .reduce((s,p)=>s+(p.fm||0),0),[schierati]);
+  const somma=useMemo(()=>{
+    let t=0; ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)t+=p.fm||0;}));
+    return t;
+  },[schierati]);
 
-  function auto(){ setScelta(s=>({...s,[gio]:consiglio})); setMsg('Formazione compilata con i consigli.'); }
-  function svuota(){ setScelta(s=>{const n={...s}; delete n[gio]; return n;}); }
+  const classificaLega=useMemo(()=>{
+    const t={}; SQUADRE.forEach(n=>{t[n]={n:n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0};});
+    Object.keys(risul).forEach(g=>{
+      const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
+      (risul[g]||[]).forEach((r,i)=>{
+        if(!turni[i]||!r) return;
+        const fa=parseFloat(r[0]), fb=parseFloat(r[1]);
+        if(isNaN(fa)||isNaN(fb)) return;
+        const a=turni[i][0], b=turni[i][1];
+        if(!t[a]||!t[b]) return;
+        t[a].g++;t[b].g++;t[a].ff+=fa;t[a].fs+=fb;t[b].ff+=fb;t[b].fs+=fa;
+        if(fa>fb){t[a].pt+=3;t[a].v++;t[b].s++;}
+        else if(fb>fa){t[b].pt+=3;t[b].v++;t[a].s++;}
+        else {t[a].pt++;t[b].pt++;t[a].p++;t[b].p++;}
+      });
+    });
+    return Object.keys(t).map(k=>t[k]).sort((x,y)=>(y.pt-x.pt)||(y.ff-x.ff)||x.n.localeCompare(y.n));
+  },[risul]);
+
+  function auto(){ setScelta(s=>Object.assign({},s,{[gio]:consiglio})); setMsg('Formazione compilata con i consigli.'); }
+  function svuota(){ setScelta(s=>{const n=Object.assign({},s); delete n[gio]; return n;}); }
+
   function metti(R,k,id){
     setScelta(s=>{
-      const cur=s[gio]||consiglio;
-      const nuovo={}; ROLES.forEach(r=>nuovo[r]=[...(cur[r]||[])]);
-      ROLES.forEach(r=>{nuovo[r]=nuovo[r].map(x=>x===id?null:x);});
-      nuovo[R]=Array.from({length:quanti[R]}).map((_,i)=>nuovo[R][i]??null);
-      nuovo[R][k]=id;
-      return {...s,[gio]:nuovo};
+      const cur=s[gio]||consiglio, nuovo={};
+      ROLES.forEach(r=>{nuovo[r]=(cur[r]||[]).map(x=>x===id?null:x);});
+      const arr=[];
+      for(let i=0;i<quanti[R];i++) arr.push(nuovo[R][i]||null);
+      arr[k]=id; nuovo[R]=arr;
+      return Object.assign({},s,{[gio]:nuovo});
     });
     setApri(null);
   }
@@ -330,180 +339,172 @@ function App(){
     fr.onload=e=>{
       try{
         const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
-        const sh=wb.Sheets[wb.SheetNames.find(n=>/tutti/i.test(n))||wb.SheetNames[0]];
-        const rows=XLSX.utils.sheet_to_json(sh,{header:1});
-        const hi=rows.findIndex(r=>r&&r.some(c=>/^nome$/i.test(String(c||'').trim())));
-        if(hi<0){setMsg('Non trovo la riga di intestazione con "Nome".');return;}
+        const nome=wb.SheetNames.filter(n=>/tutti/i.test(n))[0]||wb.SheetNames[0];
+        const rows=XLSX.utils.sheet_to_json(wb.Sheets[nome],{header:1});
+        let hi=-1;
+        rows.forEach((r,i)=>{ if(hi<0&&r&&r.some(c=>String(c||'').trim().toLowerCase()==='nome')) hi=i; });
+        if(hi<0){ setMsg('Non trovo la riga di intestazione con "Nome".'); return; }
         const H=rows[hi].map(c=>String(c||'').trim().toLowerCase());
         const col=n=>H.indexOf(n);
-        const out={};let n=0;
+        const out={}; let n=0;
         rows.slice(hi+1).forEach(r=>{
-          if(!r||!r[col('nome')])return;
-          const k=norm(r[col('nome')])+norm(r[col('squadra')]);
-          out[k]={pv:+r[col('pv')]||0,mv:+r[col('mv')]||0,fm:+r[col('fm')]||0,
-                  gf:+r[col('gf')]||0,ass:+r[col('ass')]||0,amm:+r[col('amm')]||0};
-          n++;});
+          if(!r||!r[col('nome')]) return;
+          out[norm(r[col('nome')])+norm(r[col('squadra')])]={
+            pv:+r[col('pv')]||0, mv:+r[col('mv')]||0, fm:+r[col('fm')]||0,
+            gf:+r[col('gf')]||0, ass:+r[col('ass')]||0, amm:+r[col('amm')]||0};
+          n++;
+        });
         setStats(out); mem.set('stats',out);
         setMsg('Aggiornate le statistiche di '+n+' giocatori.');
-      }catch(err){setMsg('Errore nel file: '+err.message);}
+      }catch(err){ setMsg('Errore nel file: '+err.message); }
     };
     fr.readAsArrayBuffer(file);
   }
 
   function testo(){
-    const r=l=>l.filter(Boolean).map(p=>`  ${p.ruolo} ${p.nome} (${p.sq}) mv ${p.mv||'-'} fm ${p.fm||'-'} pres ${p.pv} — ${p.t?(p.t.casa?'in casa con ':'in trasferta a ')+p.t.avv:'turno ignoto'}`).join('\n');
-    return `LOS CONQUISTADORES — giornata ${gio}\n`+
-      (sfida?`In lega: ${sfida.avv} (${sfida.casa?'casa':'trasferta'})\n`:'')+
-      `Modulo ${modulo}${modif?` · modificatore ${modif.media.toFixed(2)} → +${modif.punti}`:''}\n\nIN CAMPO\n`+
-      r(ROLES.flatMap(R=>schierati[R]))+`\n\nPANCHINA\n`+r(panchina)+`\n`;
+    const r=l=>l.filter(Boolean).map(p=>'  '+p.ruolo+' '+p.nome+' ('+p.sq+') mv '+(p.mv||'-')+' fm '+(p.fm||'-')
+      +' pres '+p.pv+' — '+(p.t?(p.t.casa?'in casa con ':'in trasferta a ')+p.t.avv:'turno ignoto')).join('\n');
+    const inCampo=[]; ROLES.forEach(R=>schierati[R].forEach(p=>inCampo.push(p)));
+    return 'LOS CONQUISTADORES — giornata '+gio+'\n'
+      +(sfida?'In lega: '+sfida.avv+' ('+(sfida.casa?'casa':'trasferta')+')\n':'')
+      +'Modulo '+modulo+(modif?' · modificatore '+modif.media.toFixed(2)+' → +'+modif.punti:'')
+      +'\n\nIN CAMPO\n'+r(inCampo)+'\n\nPANCHINA\n'+r(panchina)+'\n';
   }
 
-  return <>
-    <div className="top">
-      <div className="top-r">
-        <div className="crest">LC</div>
-        <div style={{flex:1,minWidth:0}}>
-          <div className="tname">Los Conquistadores</div>
-          <div className="tsub">LaFiga · 8 squadre · modificatore attivo</div>
-        </div>
-      </div>
-      <div className="gio">
-        <button onClick={()=>setGio(g=>Math.max(CAL_DA,g-1))}>‹</button>
-        <div className="mid">
-          <div className="g">giornata {gio}</div>
-          <div className="vs">{sfida?(sfida.casa?'in casa con ':'in trasferta da ')+sfida.avv:'—'}</div>
-        </div>
-        <button onClick={()=>setGio(g=>Math.min(38,g+1))}>›</button>
-      </div>
-    </div>
+  /* ---------- testata ---------- */
+  const testata=D('top',null,
+    D('top-r',null,
+      D('crest',null,'LC'),
+      D('',{style:{flex:1,minWidth:0}},
+        D('tname',null,'Los Conquistadores'),
+        D('tsub',null,'LaFiga · 8 squadre · modificatore attivo'))),
+    D('gio',null,
+      h('button',{onClick:()=>setGio(g=>Math.max(CAL_DA,g-1))},'‹'),
+      D('mid',null, D('g',null,'giornata '+gio),
+        D('vs',null, sfida?(sfida.casa?'in casa con ':'in trasferta da ')+sfida.avv:'—')),
+      h('button',{onClick:()=>setGio(g=>Math.min(38,g+1))},'›')));
 
-    {msg&&<div className="card" onClick={()=>setMsg('')} style={{borderColor:'var(--acc)'}}>
-      <div style={{fontSize:13}}>{msg}</div><p className="hint">tocca per chiudere</p></div>}
+  /* ---------- campo ---------- */
+  const paginaCampo=[
+    D('mods',{key:'m'}, MODULI.map(m=>h('button',{key:m,className:'chip','data-on':modulo===m?'1':'0',
+      onClick:()=>setModulo(m)},m))),
+    h(Campo,{key:'c',schierati:schierati,modulo:modulo,onSlot:(R,k)=>setApri({R:R,k:k})}),
+    D('card',{key:'r',style:{marginTop:10}},
+      D('kv',null,S('',null,'Somma fantamedie'),h('b',{className:'num'},somma.toFixed(2))),
+      D('kv',null,S('',null,'Modificatore difesa'),
+        h('b',{className:'num'},modif?modif.media.toFixed(2)+' → +'+modif.punti:'—')),
+      D('kv',null,S('',null,'Formazione'),
+        mieScelte?S('',null,'scelta da te'):S('badge',null,'consigliata'))),
+    h('button',{key:'b1',className:'btn',onClick:auto},'Compila con i consigli'),
+    mieScelte?h('button',{key:'b2',className:'btn alt',onClick:svuota},'Torna ai consigli'):null,
+    h('button',{key:'b3',className:'btn alt',onClick:()=>{
+      try{navigator.clipboard.writeText(testo());setMsg('Riepilogo copiato: incollalo in chat per un parere.');}
+      catch(e){setMsg('Copia non riuscita.');}}},'Copia riepilogo'),
+    D('card',{key:'p'}, h('h2',null,'Panchina'),
+      panchina.map(p=>h(Riga,{key:p.id,p:p,onClick:()=>setApri({R:p.ruolo,k:null})}))),
+    h('p',{key:'h',className:'hint',style:{padding:'0 2px 4px'}},
+      'Tocca una maglia per cambiare il giocatore. Il numero è il voto atteso: fantamedia corretta per avversario e campo, media voto per portiere e difensori. Pallino giallo se ha una sola presenza, rosso se non ha mai giocato.')
+  ];
 
-    {vista==='campo'&&<>
-      <div className="mods">
-        {MODULI.map(m=><button key={m} className="chip" data-on={modulo===m?'1':'0'} onClick={()=>setModulo(m)}>{m}</button>)}
-      </div>
-      <Campo schierati={schierati} modulo={modulo} onSlot={(R,k)=>setApri({R,k})}/>
-      <div className="card" style={{marginTop:10}}>
-        <div className="kv"><span>Somma fantamedie</span><b className="num">{somma.toFixed(2)}</b></div>
-        <div className="kv"><span>Modificatore difesa</span>
-          <b className="num">{modif?modif.media.toFixed(2)+' → +'+modif.punti:'—'}</b></div>
-        <div className="kv"><span>Formazione</span>
-          <span>{mieScelte?'scelta da te':<span className="badge">consigliata</span>}</span></div>
-      </div>
-      <button className="btn" onClick={auto}>Compila con i consigli</button>
-      {mieScelte&&<button className="btn alt" onClick={svuota}>Torna ai consigli</button>}
-      <button className="btn alt" onClick={()=>{navigator.clipboard.writeText(testo());setMsg('Riepilogo copiato: incollalo in chat per un parere.');}}>Copia riepilogo</button>
-      <div className="card">
-        <h2>Panchina</h2>
-        {panchina.map(p=><Riga key={p.id} p={p} onClick={()=>setApri({R:p.ruolo,k:null,pre:p.id})}/>)}
-      </div>
-      <p className="hint" style={{padding:'0 2px 4px'}}>Tocca una maglia per cambiare il giocatore.
-        Il numero sulla maglia è il voto atteso: fantamedia di stagione corretta per avversario e campo,
-        media voto per portiere e difensori. Pallino giallo se ha una sola presenza, rosso se non ha mai giocato.</p>
-    </>}
+  /* ---------- rosa ---------- */
+  const paginaRosa=D('card',null, h('h2',null,'La mia rosa'),
+    h('p',{className:'hint'},rosa.length+' giocatori · per ruolo e rendimento'),
+    ROLES.map(R=>D('',{key:R}, rosa.filter(p=>p.ruolo===R).sort((a,b)=>(b.fm||0)-(a.fm||0))
+      .map(p=>h(Riga,{key:p.id,p:p,dx:[h('b',{key:'b'},fmt(p.fm)),h('span',{key:'s'},p.pv+' pres')]})))));
 
-    {vista==='rosa'&&<div className="card">
-      <h2>La mia rosa</h2>
-      <p className="hint">{rosa.length} giocatori · ordinati per ruolo e rendimento</p>
-      {ROLES.map(R=><div key={R}>
-        {rosa.filter(p=>p.ruolo===R).sort((a,b)=>(b.fm||0)-(a.fm||0)).map(p=>
-          <Riga key={p.id} p={p} dx={<><b>{p.fm?p.fm.toFixed(2):'—'}</b><span>{p.pv} pres</span></>}/>)}
-      </div>)}
-    </div>}
+  /* ---------- lega ---------- */
+  const paginaLega=[
+    D('card',{key:'cl'}, h('h2',null,'Classifica'),
+      h('p',{className:'hint'},'Vittoria 3, pareggio 1. A parità di punti contano i fantapunti fatti.'),
+      classificaLega.map((r,i)=>D('kv',{key:r.n,style:{fontWeight:r.n===MIA?700:400}},
+        S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(i+1)+'. '+r.n),
+        S('num',{style:{width:120,textAlign:'right',color:'var(--muted)',fontSize:12}},
+          r.g+' · '+r.v+' '+r.p+' '+r.s+' · '+r.ff.toFixed(0)),
+        S('num',{style:{width:32,textAlign:'right'}},h('b',null,r.pt)))),
+      Object.keys(risul).length?null:h('p',{className:'hint'},
+        'Tutti a zero: la vostra prima giornata è la 5ª. Inserisci i fantapunti qui sotto e la classifica si costruisce.')),
+    D('card',{key:'ri'}, h('h2',null,'Risultati · giornata '+gio),
+      h('p',{className:'hint'},'I fantapunti totali di ogni squadra, modificatore compreso. In grassetto la tua sfida.'),
+      turnoLega.map((m,i)=>{
+        const r=(risul[gio]||[])[i]||['',''];
+        const set=(k,v)=>setRisul(o=>{
+          const arr=(o[gio]||[['',''],['',''],['',''],['','']]).map(x=>x.slice());
+          arr[i][k]=v;
+          return Object.assign({},o,{[gio]:arr});
+        });
+        const mio=m[0]===MIA||m[1]===MIA;
+        return D('',{key:i,style:{display:'flex',alignItems:'center',gap:6,padding:'7px 0',
+            borderBottom:'1px solid var(--line)',fontWeight:mio?700:400,fontSize:13}},
+          S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m[0]),
+          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[0],
+            onChange:e=>set(0,e.target.value),style:{width:62,padding:6,textAlign:'center'}}),
+          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[1],
+            onChange:e=>set(1,e.target.value),style:{width:62,padding:6,textAlign:'center'}}),
+          S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textAlign:'right'}},m[1]));
+      })),
+    sfida?D('card',{key:'av'}, h('h2',null,sfida.avv),
+      h('p',{className:'hint'},'Chi può schierarti contro, per fantamedia.'),
+      (squadre[sfida.avv]||[]).map(p=>valuta(p,turno,classifica)).sort((a,b)=>(b.fm||0)-(a.fm||0)).slice(0,12)
+        .map(p=>h(Riga,{key:p.id,p:p,dx:[h('b',{key:'b'},fmt(p.fm)),h('span',{key:'s'},p.pv+' pres')]}))):null
+  ];
 
-    {vista==='lega'&&<>
-      <div className="card">
-        <h2>Classifica</h2>
-        <p className="hint">Vittoria 3, pareggio 1. A parità di punti conta il totale dei fantapunti fatti.</p>
-        <div className="kv" style={{color:'var(--muted)',fontSize:11.5}}>
-          <span style={{flex:1}}>squadra</span><span className="num" style={{width:118,textAlign:'right'}}>G · V N P · FP</span><span className="num" style={{width:30,textAlign:'right'}}>pt</span></div>
-        {classificaLega.map((r,i)=>
-          <div className="kv" key={r.n} style={{fontWeight:r.n===MIA?700:400}}>
-            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{i+1}. {r.n}</span>
-            <span className="num" style={{width:118,textAlign:'right',color:'var(--muted)',fontSize:12}}>{r.g} · {r.v} {r.p} {r.s} · {r.ff.toFixed(0)}</span>
-            <span className="num" style={{width:30,textAlign:'right'}}><b>{r.pt}</b></span></div>)}
-        {!Object.keys(risul).length&&<p className="hint">Tutti a zero: la prima giornata è la 5ª. Inserisci i fantapunti qui sotto e la classifica si costruisce.</p>}
-      </div>
-      <div className="card">
-        <h2>Risultati · giornata {gio}</h2>
-        <p className="hint">I fantapunti totali di ogni squadra, modificatore compreso. Le sfide in grassetto sono le tue.</p>
-        {CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length].map((m,i)=>{
-          const r=(risul[gio]||[])[i]||['',''];
-          const set=(k,v)=>setRisul(o=>{
-            const arr=[...(o[gio]||[['',''],['',''],['',''],['','']])];
-            arr[i]=[...(arr[i]||['',''])]; arr[i][k]=v;
-            return {...o,[gio]:arr};});
-          const mio=m[0]===MIA||m[1]===MIA;
-          return <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'7px 0',
-              borderBottom:'1px solid var(--line)',fontWeight:mio?700:400,fontSize:13}}>
-            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m[0]}</span>
-            <input type="number" step="0.5" inputMode="decimal" value={r[0]} onChange={e=>set(0,e.target.value)} style={{width:64,padding:'6px',textAlign:'center'}}/>
-            <input type="number" step="0.5" inputMode="decimal" value={r[1]} onChange={e=>set(1,e.target.value)} style={{width:64,padding:'6px',textAlign:'center'}}/>
-            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textAlign:'right'}}>{m[1]}</span>
-          </div>;})}
-      </div>
-      {sfida&&<div className="card">
-        <h2>{sfida.avv}</h2>
-        <p className="hint">Chi può schierarti contro, per fantamedia.</p>
-        {(squadre[sfida.avv]||[]).map(p=>valuta(p,turno,classifica))
-          .sort((a,b)=>(b.fm||0)-(a.fm||0)).slice(0,12)
-          .map(p=><Riga key={p.id} p={p} dx={<><b>{p.fm?p.fm.toFixed(2):'—'}</b><span>{p.pv} pres</span></>}/>)}
-      </div>}
-    </>}
+  /* ---------- dati ---------- */
+  const paginaDati=[
+    D('card',{key:'st'}, h('h2',null,'Statistiche'),
+      h('p',{className:'hint'},'Scarica da Fantacalcio.it, Risorse → Statistiche, il pulsante Scarica. Poi carica qui il file dopo ogni giornata.'),
+      h('label',{className:'file btn alt',style:{marginTop:10}},'Carica il file .xlsx',
+        h('input',{type:'file',accept:'.xlsx,.xls',onChange:e=>{
+          const f=e.target.files[0]; if(f) carica(f); e.target.value='';}})),
+      h('p',{className:'hint'},stats?'Statistiche aggiornate dal tuo file.':'Al momento uso quelle del 17/09/2026, dopo 4 giornate.')),
+    D('card',{key:'tu'}, h('h2',null,'Partite di Serie A'),
+      h('p',{className:'hint'},'Una riga per partita, formato Casa-Trasferta. Aggiorna a ogni giornata.'),
+      h('textarea',{rows:11,value:turnoTxt,onChange:e=>setTurnoTxt(e.target.value)})),
+    D('card',{key:'cs'}, h('h2',null,'Classifica di Serie A'),
+      h('p',{className:'hint'},'Dalla prima all\'ultima, separate da virgola. Serve a pesare la difficoltà dell\'avversario.'),
+      h('textarea',{rows:4,value:classTxt,onChange:e=>setClassTxt(e.target.value)})),
+    D('card',{key:'mo'}, h('h2',null,'Modificatore di difesa'),
+      h('p',{className:'hint'},'Le soglie della tua lega, sulla media voto di portiere e difensori schierati.'),
+      MOD_SOGLIE.map(s=>D('kv',{key:s[0]},S('',null,s[0]),h('b',{className:'num'},s[1]))))
+  ];
 
-    {vista==='dati'&&<>
-      <div className="card">
-        <h2>Statistiche</h2>
-        <p className="hint">Scarica da Fantacalcio.it, Risorse → Statistiche, il pulsante Scarica.
-          Poi carica qui il file dopo ogni giornata: i voti attesi si ricalcolano.</p>
-        <label className="file btn alt" style={{marginTop:10}}>
-          Carica il file .xlsx
-          <input type="file" accept=".xlsx,.xls" onChange={e=>{const f=e.target.files[0];if(f)carica(f);e.target.value='';}}/>
-        </label>
-        <p className="hint">{stats?'Statistiche aggiornate dal tuo file.':'Al momento uso quelle caricate il 17/09/2026, dopo 4 giornate.'}</p>
-      </div>
-      <div className="card">
-        <h2>Partite di Serie A</h2>
-        <p className="hint">Una riga per partita, formato Casa-Trasferta. Aggiorna a ogni giornata.</p>
-        <textarea rows="11" value={turnoTxt} onChange={e=>setTurnoTxt(e.target.value)}/>
-      </div>
-      <div className="card">
-        <h2>Classifica</h2>
-        <p className="hint">Dalla prima all'ultima, separate da virgola. Serve a pesare la difficoltà dell'avversario.</p>
-        <textarea rows="4" value={classTxt} onChange={e=>setClassTxt(e.target.value)}/>
-      </div>
-      <div className="card">
-        <h2>Modificatore di difesa</h2>
-        <p className="hint">Le soglie della tua lega, sulla media voto di portiere e difensori schierati.</p>
-        {MOD_SOGLIE.map(([s,v])=><div className="kv" key={s}><span>{s}</span><b className="num">{v}</b></div>)}
-      </div>
-    </>}
+  /* ---------- foglio di scelta ---------- */
+  const nomeRuolo={P:'portiere',D:'difensore',C:'centrocampista',A:'attaccante'};
+  const foglio=apri?D('mask',{onClick:()=>setApri(null)},
+    D('sheet',{onClick:e=>e.stopPropagation()},
+      D('grab'),
+      h('h2',{style:{fontSize:15}},'Scegli un '+nomeRuolo[apri.R]),
+      h('p',{className:'hint'},'In ordine di voto atteso. Chi è già in campo compare in fondo.'),
+      rosa.filter(p=>p.ruolo===apri.R)
+        .sort((a,b)=>((dentro.has(a.id)?1:0)-(dentro.has(b.id)?1:0))||((b.voto||0)-(a.voto||0)))
+        .map(p=>h(Riga,{key:p.id,p:p,
+          onClick:()=>{
+            let k=apri.k;
+            if(k===null||k===undefined){
+              const vuoto=schierati[apri.R].indexOf(null);
+              k=vuoto>=0?vuoto:schierati[apri.R].length-1;
+            }
+            metti(apri.R,k,p.id);
+          },
+          dx:[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},dentro.has(p.id)?'in campo':'panchina')]})))):null;
 
-    {apri&&<div className="mask" onClick={()=>setApri(null)}>
-      <div className="sheet" onClick={e=>e.stopPropagation()}>
-        <div className="grab"/>
-        <h2 style={{fontSize:15}}>Scegli un {apri.R==='P'?'portiere':apri.R==='D'?'difensore':apri.R==='C'?'centrocampista':'attaccante'}</h2>
-        <p className="hint">In ordine di voto atteso. Chi è già in campo compare in fondo.</p>
-        {rosa.filter(p=>p.ruolo===apri.R)
-             .sort((a,b)=>(dentro.has(a.id)-dentro.has(b.id))||((b.voto??-9)-(a.voto??-9)))
-             .map(p=><Riga key={p.id} p={p}
-               onClick={()=>{
-                 const k=apri.k!==null&&apri.k!==undefined?apri.k:
-                   (schierati[apri.R].findIndex(x=>!x)>=0?schierati[apri.R].findIndex(x=>!x):schierati[apri.R].length-1);
-                 metti(apri.R,k,p.id);}}
-               dx={<><b>{p.voto?p.voto.toFixed(2):'—'}</b><span>{dentro.has(p.id)?'in campo':'panchina'}</span></>}/>)}
-      </div>
-    </div>}
+  const barra=h('nav',{className:'nav'},
+    [['campo','⚽','Campo'],['rosa','👥','Rosa'],['lega','🏆','Lega'],['dati','⚙','Dati']].map(v=>
+      h('button',{key:v[0],'data-on':vista===v[0]?'1':'0',onClick:()=>setVista(v[0])},
+        h('b',null,v[1]),v[2])));
 
-    <nav className="nav">
-      {[['campo','⚽','Campo'],['rosa','👥','Rosa'],['lega','🏆','Lega'],['dati','⚙︎','Dati']].map(([k,i,l])=>
-        <button key={k} data-on={vista===k?'1':'0'} onClick={()=>setVista(k)}><b>{i}</b>{l}</button>)}
-    </nav>
-  </>;
+  return h(React.Fragment,null,
+    testata,
+    msg?D('card',{onClick:()=>setMsg(''),style:{borderColor:'var(--acc)'}},
+      D('',{style:{fontSize:13}},msg),h('p',{className:'hint'},'tocca per chiudere')):null,
+    vista==='campo'?paginaCampo:null,
+    vista==='rosa'?paginaRosa:null,
+    vista==='lega'?paginaLega:null,
+    vista==='dati'?paginaDati:null,
+    foglio,
+    barra);
 }
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+
+ReactDOM.createRoot(document.getElementById('root')).render(h(App));
 </script>
 </body>
 </html>
