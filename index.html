@@ -181,8 +181,9 @@ const fmt=v=>(v||v===0)&&v!==null?Number(v).toFixed(2):'—';
 function Riga(props){
   const p=props.p;
   const sotto=p.sq+(p.t?' · '+(p.t.casa?'':'a ')+p.t.avv:' · turno non impostato')
-    +(p.stato==='mai'?' · mai in campo':'')+(p.stato==='poche'?' · 1 presenza':'');
-  return D('pl',{onClick:props.onClick,key:props.rkey},
+    +(p.stato==='mai'?' · mai in campo':'')+(p.stato==='poche'?' · 1 presenza':'')
+    +(p.fuori?' · INDISPONIBILE':'');
+  return D('pl',{onClick:props.onClick,key:props.rkey,style:p.fuori?{opacity:.5}:null},
     S('tag '+p.ruolo,null,p.ruolo),
     D('mid',null, D('n',null,p.nome), D('s',null,sotto)),
     D('r',null, props.dx||[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},'atteso')])
@@ -201,7 +202,7 @@ function Campo(props){
         D('shirt'+(p?'':' void'),null,
           p?S('fm',null,p.voto?fmt(p.voto):'—'):S('op',null,'vuoto'),
           p?S('op',null,(p.t?(p.t.casa?'':'@')+p.t.avv.slice(0,7):'—')):null,
-          p&&p.stato?h('i',{className:'dot '+(p.stato==='mai'?'b':'w')}):null),
+          p&&(p.stato||p.fuori)?h('i',{className:'dot '+((p.fuori||p.stato==='mai')?'b':'w')}):null),
         D('nm',null,p?p.nome:'—')));
     }
     return D('line',{key:R},slot);
@@ -217,6 +218,7 @@ function App(){
   const [stats,setStats]=useState(()=>mem.get('stats',null));
   const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));
   const [risul,setRisul]=useState(()=>mem.get('risul',{}));
+  const [fuori,setFuori]=useState(()=>mem.get('fuori',[]));
   const [apri,setApri]=useState(null);
   const [msg,setMsg]=useState('');
 
@@ -226,6 +228,7 @@ function App(){
   useEffect(()=>{mem.set('class',classTxt)},[classTxt]);
   useEffect(()=>{mem.set('scelta',scelta)},[scelta]);
   useEffect(()=>{mem.set('risul',risul)},[risul]);
+  useEffect(()=>{mem.set('fuori',fuori)},[fuori]);
 
   const squadre=useSquadre(stats);
 
@@ -244,7 +247,11 @@ function App(){
     return m;
   },[classTxt]);
 
-  const rosa=useMemo(()=>(squadre[MIA]||[]).map(p=>valuta(p,turno,classifica)),[squadre,turno,classifica]);
+  const fuoriSet=useMemo(()=>new Set(fuori),[fuori]);
+  const segna=id=>setFuori(f=>f.indexOf(id)>=0?f.filter(x=>x!==id):f.concat([id]));
+  const rosa=useMemo(()=>(squadre[MIA]||[]).map(p=>{
+    const v=valuta(p,turno,classifica); v.fuori=fuoriSet.has(v.id); return v;
+  }),[squadre,turno,classifica,fuoriSet]);
 
   const turnoLega=useMemo(()=>CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length],[gio]);
   const sfida=useMemo(()=>{
@@ -258,7 +265,7 @@ function App(){
   const consiglio=useMemo(()=>{
     const out={};
     ROLES.forEach(R=>{
-      out[R]=rosa.filter(p=>p.ruolo===R&&p.voto!==null&&p.stato!=='mai')
+      out[R]=rosa.filter(p=>p.ruolo===R&&p.voto!==null&&p.stato!=='mai'&&!p.fuori)
                  .sort((a,b)=>b.voto-a.voto).slice(0,quanti[R]).map(p=>p.id);
     });
     return out;
@@ -408,9 +415,12 @@ function App(){
 
   /* ---------- rosa ---------- */
   const paginaRosa=D('card',null, h('h2',null,'La mia rosa'),
-    h('p',{className:'hint'},rosa.length+' giocatori · per ruolo e rendimento'),
+    h('p',{className:'hint'},'Tocca un giocatore per segnarlo indisponibile, infortunato o in panchina. Sparisce dai consigli finché non lo rimetti.'),
     ROLES.map(R=>D('',{key:R}, rosa.filter(p=>p.ruolo===R).sort((a,b)=>(b.fm||0)-(a.fm||0))
-      .map(p=>h(Riga,{key:p.id,p:p,dx:[h('b',{key:'b'},fmt(p.fm)),h('span',{key:'s'},p.pv+' pres')]})))));
+      .map(p=>h(Riga,{key:p.id,p:p,onClick:()=>segna(p.id),
+        dx:[h('b',{key:'b'},fmt(p.fm)),h('span',{key:'s'},p.fuori?'fuori':p.pv+' pres')]})))),
+    fuori.length?h('button',{className:'btn alt',onClick:()=>setFuori([])},
+      'Rimetti tutti disponibili ('+fuori.length+')'):null);
 
   /* ---------- lega ---------- */
   const paginaLega=[
@@ -475,7 +485,7 @@ function App(){
       h('h2',{style:{fontSize:15}},'Scegli un '+nomeRuolo[apri.R]),
       h('p',{className:'hint'},'In ordine di voto atteso. Chi è già in campo compare in fondo.'),
       rosa.filter(p=>p.ruolo===apri.R)
-        .sort((a,b)=>((dentro.has(a.id)?1:0)-(dentro.has(b.id)?1:0))||((b.voto||0)-(a.voto||0)))
+        .sort((a,b)=>((a.fuori?1:0)-(b.fuori?1:0))||((dentro.has(a.id)?1:0)-(dentro.has(b.id)?1:0))||((b.voto||0)-(a.voto||0)))
         .map(p=>h(Riga,{key:p.id,p:p,
           onClick:()=>{
             let k=apri.k;
@@ -485,7 +495,7 @@ function App(){
             }
             metti(apri.R,k,p.id);
           },
-          dx:[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},dentro.has(p.id)?'in campo':'panchina')]})))):null;
+          dx:[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},p.fuori?'indisponibile':(dentro.has(p.id)?'in campo':'panchina'))]})))):null;
 
   const barra=h('nav',{className:'nav'},
     [['campo','⚽','Campo'],['rosa','👥','Rosa'],['lega','🏆','Lega'],['dati','⚙','Dati']].map(v=>
