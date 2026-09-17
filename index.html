@@ -185,6 +185,23 @@ function Riga({p,dx,onClick}){
 }
 
 function Campo({schierati,onSlot,modulo}){
+  const classificaLega=useMemo(()=>{
+    const t={}; SQUADRE.forEach(n=>t[n]={n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0});
+    Object.entries(risul).forEach(([g,arr])=>{
+      const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
+      (arr||[]).forEach((r,i)=>{
+        if(!turni[i]||r==null||r[0]==null||r[1]==null||r[0]===''||r[1]==='')return;
+        const [a,b]=turni[i], fa=+r[0], fb=+r[1];
+        if(isNaN(fa)||isNaN(fb))return;
+        t[a].g++;t[b].g++; t[a].ff+=fa;t[a].fs+=fb; t[b].ff+=fb;t[b].fs+=fa;
+        if(fa>fb){t[a].pt+=3;t[a].v++;t[b].s++;}
+        else if(fb>fa){t[b].pt+=3;t[b].v++;t[a].s++;}
+        else {t[a].pt++;t[b].pt++;t[a].p++;t[b].p++;}
+      });
+    });
+    return Object.values(t).sort((x,y)=>y.pt-x.pt||y.ff-x.ff||x.n.localeCompare(y.n));
+  },[risul]);
+
   const [nd,nc,na]=modulo.split('-').map(Number);
   const linee=[['A',na],['C',nc],['D',nd],['P',1]];
   let i={P:0,D:0,C:0,A:0};
@@ -217,6 +234,7 @@ function App(){
   const [classTxt,setClassTxt]=useState(()=>mem.get('class',CLASS_DEF));
   const [stats,setStats]=useState(()=>mem.get('stats',null));
   const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));   // {giornata:{P:[id],D:[],C:[],A:[]}}
+  const [risul,setRisul]=useState(()=>mem.get('risul',{}));     // {giornata:[[fp casa,fp trasferta] x4]}
   const [apri,setApri]=useState(null);
   const [msg,setMsg]=useState('');
 
@@ -225,6 +243,7 @@ function App(){
   useEffect(()=>{mem.set('turno',turnoTxt)},[turnoTxt]);
   useEffect(()=>{mem.set('class',classTxt)},[classTxt]);
   useEffect(()=>{mem.set('scelta',scelta)},[scelta]);
+  useEffect(()=>{mem.set('risul',risul)},[risul]);
 
   const squadre=useSquadre(stats);
   const turno=useMemo(()=>{const m={};
@@ -240,6 +259,23 @@ function App(){
     const g=CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length];
     const m=g.find(x=>x[0]===MIA||x[1]===MIA);
     return m?{avv:m[0]===MIA?m[1]:m[0],casa:m[0]===MIA}:null;},[gio]);
+
+  const classificaLega=useMemo(()=>{
+    const t={}; SQUADRE.forEach(n=>t[n]={n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0});
+    Object.entries(risul).forEach(([g,arr])=>{
+      const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
+      (arr||[]).forEach((r,i)=>{
+        if(!turni[i]||r==null||r[0]==null||r[1]==null||r[0]===''||r[1]==='')return;
+        const [a,b]=turni[i], fa=+r[0], fb=+r[1];
+        if(isNaN(fa)||isNaN(fb))return;
+        t[a].g++;t[b].g++; t[a].ff+=fa;t[a].fs+=fb; t[b].ff+=fb;t[b].fs+=fa;
+        if(fa>fb){t[a].pt+=3;t[a].v++;t[b].s++;}
+        else if(fb>fa){t[b].pt+=3;t[b].v++;t[a].s++;}
+        else {t[a].pt++;t[b].pt++;t[a].p++;t[b].p++;}
+      });
+    });
+    return Object.values(t).sort((x,y)=>y.pt-x.pt||y.ff-x.ff||x.n.localeCompare(y.n));
+  },[risul]);
 
   const [nd,nc,na]=modulo.split('-').map(Number);
   const quanti={P:1,D:nd,C:nc,A:na};
@@ -379,11 +415,34 @@ function App(){
 
     {vista==='lega'&&<>
       <div className="card">
-        <h2>Calendario · giornata {gio}</h2>
-        <p className="hint">Sette giornate che si ripetono uguali fino alla 38ª.</p>
-        {CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length].map((m,i)=>
-          <div className="kv" key={i} style={{fontWeight:(m[0]===MIA||m[1]===MIA)?700:400}}>
-            <span>{m[0]}</span><span style={{color:'var(--muted)'}}>—</span><span>{m[1]}</span></div>)}
+        <h2>Classifica</h2>
+        <p className="hint">Vittoria 3, pareggio 1. A parità di punti conta il totale dei fantapunti fatti.</p>
+        <div className="kv" style={{color:'var(--muted)',fontSize:11.5}}>
+          <span style={{flex:1}}>squadra</span><span className="num" style={{width:118,textAlign:'right'}}>G · V N P · FP</span><span className="num" style={{width:30,textAlign:'right'}}>pt</span></div>
+        {classificaLega.map((r,i)=>
+          <div className="kv" key={r.n} style={{fontWeight:r.n===MIA?700:400}}>
+            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{i+1}. {r.n}</span>
+            <span className="num" style={{width:118,textAlign:'right',color:'var(--muted)',fontSize:12}}>{r.g} · {r.v} {r.p} {r.s} · {r.ff.toFixed(0)}</span>
+            <span className="num" style={{width:30,textAlign:'right'}}><b>{r.pt}</b></span></div>)}
+        {!Object.keys(risul).length&&<p className="hint">Tutti a zero: la prima giornata è la 5ª. Inserisci i fantapunti qui sotto e la classifica si costruisce.</p>}
+      </div>
+      <div className="card">
+        <h2>Risultati · giornata {gio}</h2>
+        <p className="hint">I fantapunti totali di ogni squadra, modificatore compreso. Le sfide in grassetto sono le tue.</p>
+        {CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length].map((m,i)=>{
+          const r=(risul[gio]||[])[i]||['',''];
+          const set=(k,v)=>setRisul(o=>{
+            const arr=[...(o[gio]||[['',''],['',''],['',''],['','']])];
+            arr[i]=[...(arr[i]||['',''])]; arr[i][k]=v;
+            return {...o,[gio]:arr};});
+          const mio=m[0]===MIA||m[1]===MIA;
+          return <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'7px 0',
+              borderBottom:'1px solid var(--line)',fontWeight:mio?700:400,fontSize:13}}>
+            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m[0]}</span>
+            <input type="number" step="0.5" inputMode="decimal" value={r[0]} onChange={e=>set(0,e.target.value)} style={{width:64,padding:'6px',textAlign:'center'}}/>
+            <input type="number" step="0.5" inputMode="decimal" value={r[1]} onChange={e=>set(1,e.target.value)} style={{width:64,padding:'6px',textAlign:'center'}}/>
+            <span style={{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textAlign:'right'}}>{m[1]}</span>
+          </div>;})}
       </div>
       {sfida&&<div className="card">
         <h2>{sfida.avv}</h2>
