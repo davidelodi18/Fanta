@@ -348,7 +348,7 @@ function parseDemo(){
 const DEFCFG={
   teams:['Io','Squadra 2','Squadra 3','Squadra 4','Squadra 5','Squadra 6','Squadra 7','Squadra 8'],
   budget:500, slots:{P:3,D:8,C:8,A:6}, starters:{P:1,D:4,C:4,A:3}, rigBonus:0.4,
-  mod:true, modK:1, gamma:0.85, tetto:45, alloc:{P:9,D:26,C:25,A:40}
+  mod:true, modK:1, gamma:0.85, tetto:25, alloc:{P:9,D:26,C:25,A:40}
 };
 
 /* ============================== MODELLO ============================== */
@@ -482,34 +482,31 @@ const PRESET={
 /* Zaino: la MIGLIORE combinazione di nTit giocatori entro il budget,
    non la più avida. Il tetto impedisce di bruciare il reparto su un nome solo. */
 function bestRoster(pool,nTit,budget,tetto){
-  const items=pool.filter(p=>p.prezzo<=tetto).slice(0,90);
+  const items=pool.filter(p=>p.prezzo<=tetto).slice(0,60);
   if(!items.length||nTit<=0) return [];
-  const B=Math.max(nTit,Math.round(budget));
-  const NEG=-1e9;
-  const dp=[],ch=[],pb=[];
-  for(let k=0;k<=nTit;k++){
-    dp.push(new Float64Array(B+1).fill(NEG));
-    ch.push(new Int32Array(B+1).fill(-1));
-    pb.push(new Int32Array(B+1).fill(-1));
-  }
-  dp[0].fill(0);
-  items.forEach((p,i)=>{
+  const B=Math.max(nTit,Math.round(budget)), NEG=-1e9;
+  const L=[]; let cur=[];
+  for(let k=0;k<=nTit;k++){ const a=new Float32Array(B+1).fill(NEG); if(k===0) a.fill(0); cur.push(a); }
+  L.push(cur);
+  items.forEach(p=>{
+    const prev=L[L.length-1], nx=prev.map(a=>Float32Array.from(a));
     const c=Math.max(1,p.prezzo);
-    for(let k=nTit;k>=1;k--){
-      for(let b=B;b>=c;b--){
-        const prev=dp[k-1][b-c];
-        if(prev>NEG/2&&prev+p.fp>dp[k][b]){
-          dp[k][b]=prev+p.fp; ch[k][b]=i; pb[k][b]=b-c;
-        }
+    for(let k=1;k<=nTit;k++)
+      for(let b=c;b<=B;b++){
+        const v=prev[k-1][b-c];
+        if(v>NEG/2&&v+p.fp>nx[k][b]) nx[k][b]=v+p.fp;
       }
-    }
+    L.push(nx);
   });
+  const last=L[L.length-1];
   let bb=-1,best=NEG;
-  for(let b=0;b<=B;b++) if(dp[nTit][b]>best){best=dp[nTit][b];bb=b;}
+  for(let b=0;b<=B;b++) if(last[nTit][b]>best){best=last[nTit][b];bb=b;}
   if(bb<0) return [];
-  const out=[];
-  let k=nTit,b=bb;
-  while(k>0&&ch[k][b]>=0){ out.push(items[ch[k][b]]); const nb=pb[k][b]; k--; b=nb; }
+  const out=[]; let k=nTit,i=items.length;
+  while(i>0&&k>0){
+    if(L[i][k][bb]!==L[i-1][k][bb]){ const p=items[i-1]; out.push(p); bb-=Math.max(1,p.prezzo); k--; }
+    i--;
+  }
   return out.sort((a,b)=>b.fp-a.fp);
 }
 
@@ -555,34 +552,39 @@ function fabbisogno(myT,cfg,pianoSim){
 /* Frontiera di un ruolo: per ogni budget, i migliori nTit titolari acquistabili.
    Restituisce i punti per ogni livello di spesa e come ricostruire la scelta. */
 function frontiera(pool,nTit,B,tetto){
-  const items=pool.filter(p=>p.live<=tetto).slice(0,70);
+  const items=pool.filter(p=>p.live<=tetto).slice(0,60);
   const NEG=-1e9;
-  const dp=[],ch=[],pb=[];
-  for(let k=0;k<=nTit;k++){
-    dp.push(new Float64Array(B+1).fill(NEG));
-    ch.push(new Int32Array(B+1).fill(-1));
-    pb.push(new Int32Array(B+1).fill(-1));
-  }
-  dp[0].fill(0);
-  items.forEach((p,i)=>{
+  // uno strato per giocatore: la ricostruzione è esatta e non può ripescare lo stesso nome
+  const L=[];
+  let cur=[];
+  for(let k=0;k<=nTit;k++){ const a=new Float32Array(B+1).fill(NEG); if(k===0) a.fill(0); cur.push(a); }
+  L.push(cur);
+  items.forEach(p=>{
+    const prev=L[L.length-1], nx=prev.map(a=>Float32Array.from(a));
     const c=Math.max(1,p.live);
-    for(let k=nTit;k>=1;k--)
-      for(let b=B;b>=c;b--){
-        const prev=dp[k-1][b-c];
-        if(prev>NEG/2&&prev+p.fp>dp[k][b]){dp[k][b]=prev+p.fp;ch[k][b]=i;pb[k][b]=b-c;}
+    for(let k=1;k<=nTit;k++)
+      for(let b=c;b<=B;b++){
+        const v=prev[k-1][b-c];
+        if(v>NEG/2&&v+p.fp>nx[k][b]) nx[k][b]=v+p.fp;
       }
+    L.push(nx);
   });
-  // migliore cumulato: con budget b posso sempre spendere meno
-  const val=new Float64Array(B+1).fill(NEG), arg=new Int32Array(B+1).fill(-1);
+  const last=L[L.length-1];
+  const val=new Float32Array(B+1).fill(NEG), arg=new Int32Array(B+1).fill(-1);
   let best=NEG,ab=-1;
   for(let b=0;b<=B;b++){
-    if(dp[nTit][b]>best){best=dp[nTit][b];ab=b;}
+    if(last[nTit][b]>best){best=last[nTit][b];ab=b;}
     val[b]=best; arg[b]=ab;
   }
   const pick=b=>{
     let bb=arg[Math.max(0,Math.min(B,b))]; if(bb<0) return [];
-    const out=[];let k=nTit;
-    while(k>0&&ch[k][bb]>=0){out.push(items[ch[k][bb]]);const nb=pb[k][bb];k--;bb=nb;}
+    const out=[]; let k=nTit,i=items.length;
+    while(i>0&&k>0){
+      if(L[i][k][bb]!==L[i-1][k][bb]){
+        const p=items[i-1]; out.push(p); bb-=Math.max(1,p.live); k--;
+      }
+      i--;
+    }
     return out.sort((x,y)=>y.fp-x.fp);
   };
   return {val,pick,ok:best>NEG/2};
@@ -713,7 +715,7 @@ function Num({value,onChange,step=1,min=0}){
 
 /* ============================== APP ============================== */
 function App(){
-  const [tab,setTab]=useState('asta');
+  const [tab,setTab]=useState('stagione');
   const [cfg,setCfg]=useState(DEFCFG);
   const [players,setPlayers]=useState(()=>parseDemo());
   const [demo,setDemo]=useState(true);
@@ -818,7 +820,7 @@ function App(){
     fr.readAsArrayBuffer(file);
   }
 
-  const T=[['asta','Asta live'],['piani','Piani'],['prova','Prova'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
+  const T=[['stagione','Stagione'],['asta','Asta live'],['piani','Piani'],['prova','Prova'],['strategia','Strategia'],['listone','Listone'],['rosa','La mia rosa'],['setup','Impostazioni']];
 
   return <div className="app">
     <header className="top">
@@ -843,6 +845,7 @@ function App(){
       carica il listone ufficiale (Quotazioni + Statistiche, .xlsx) da <i>Impostazioni</i> per lavorare sui numeri veri.</div>}
     {msg && <div className="banner" onClick={()=>setMsg('')}>{msg} <span style={{color:'#8A7A50'}}>(tocca per chiudere)</span></div>}
 
+    {tab==='stagione'&& <Stagione players={players} cfg={cfg}/>}
     {tab==='asta'   && <Asta M={M} cfg={cfg} upd={upd} me={me} assegna={assegna} annulla={annulla} storia={storia}/>}
     {tab==='piani'&& <Piani M={M} cfg={cfg} me={me} upd={upd}/>}
     {tab==='prova'&& <Prova M={M} cfg={cfg}/>}
@@ -1337,6 +1340,11 @@ function Piani({M,cfg,me,upd}){
 
     <div className="card">
       <h2>Come si legge</h2>
+      <p className="hint">Attenzione a non leggerci più precisione di quanta ce ne sia: siccome i prezzi
+        del modello sono proporzionali al valore, ripartizioni molto diverse danno punti attesi quasi uguali
+        (sul listone vero la differenza tra la rosa più squilibrata e la più bilanciata è sotto l'1%).
+        Questi piani ti dicono <b>cosa puoi permetterti</b> e su cosa ripiegare, non l'unica rosa giusta.
+        Il vantaggio all'asta lo fai comprando sotto il valore, non seguendo una ripartizione perfetta.</p>
       <p className="hint" style={{marginBottom:0}}>La colonna a destra nella lista dei piani è quanto <b>perdi</b>
         rispetto al piano migliore. Se ripiegare costa 10 punti su 2000, il pilastro non è indispensabile
         e non devi svenarti per averlo. Se ne costa 150, quello è il giocatore su cui giocarti l'asta.
@@ -1824,6 +1832,233 @@ function Setup({cfg,setCfg,importFile,reset,clearAuction,M,players,setPlayers,se
         <button className="btn ghost" onClick={()=>{if(confirm('Cancello tutto e torno ai dati demo?'))reset();}}>Reset totale</button>
       </div>
     </div>
+  </>;
+}
+
+/* ========================= STAGIONE: dati della lega ========================= */
+const ROSE={
+  "AC Chiavo Veronica":["Vicario|Juventus|P|40","Bijlow|Genoa|P|2","Grabara|Juventus|P|1","Molina N|Roma|D|32","Chalobah|Como|D|15","Scalvini|Atalanta|D|13","Bernasconi|Atalanta|D|5","Belghali|Torino|D|2","Valdepenas|Fiorentina|D|2","Celik|Juventus|D|1","Kristensen T|Atalanta|D|1","Mastantuono|Fiorentina|C|41","Atta|Fiorentina|C|21","Gudmundsson|Lazio|C|18","Rowe|Atalanta|C|12","Jones|Inter|C|9","Alajbegovic|Juventus|C|6","Calo'|Frosinone|C|2","Colpani|Monza|C|2","Ramos G|Milan|A|156","Dybala|Roma|A|33","Lauriente'|Sassuolo|A|22","Colombo|Genoa|A|21","Pellegrino Ma|Fiorentina|A|20","Raimondo|Frosinone|A|15"],
+  "Atletico ma non troppo":["Svilar|Roma|P|51","Gollini|Roma|P|3","Palmisani|Frosinone|P|1","Di Lorenzo|Napoli|D|25","Bisseck|Inter|D|22","Ndicka|Roma|D|15","Spence|Inter|D|10","Lucumi|Juventus|D|4","Theate|Bologna|D|1","Holm|Bologna|D|1","Vasquez|Genoa|D|1","Da Cunha|Como|C|29","Vlasic|Torino|C|26","Barella|Inter|C|22","Ederson J|Atalanta|C|12","Pedro Goncalves|Fiorentina|C|12","Baldanzi|Genoa|C|1","Ferguson|Bologna|C|1","Schmid|Frosinone|C|1","Hojlund|Napoli|A|162","Yildiz|Juventus|A|46","Dovbyk|Bologna|A|32","Maldini D|Cagliari|A|11","Piccoli|Bologna|A|10","Romero D|Parma|A|1"],
+  "Deportivo La Cadrega":["Skorupski|Bologna|P|2","Caprile|Cagliari|P|1","Pessina M|Bologna|P|1","Wesley F|Roma|D|33","Rrahmani|Napoli|D|20","Ramon J|Como|D|15","Zappacosta|Atalanta|D|8","Cambiaso|Juventus|D|3","Doekhi|Lazio|D|2","Dragusin|Fiorentina|D|1","Heggem|Bologna|D|1","Orsolini|Bologna|C|49","De Bruyne|Napoli|C|43","Frattesi|Lazio|C|33","Diego Moreira|Milan|C|23","Anguissa|Napoli|C|3","Ellertsson|Genoa|C|1","Fazzini|Cagliari|C|1","Fitz-Jim|Torino|C|1","Thuram|Inter|A|153","Kean|Como|A|93","Kevin Carlos|Cagliari|A|5","El Bilal Toure|Parma|A|2","N'Dri|Lecce|A|1","Robinson J|Monza|A|1"],
+  "ITAS":["Carnesecchi|Atalanta|P|41","Okoye|Udinese|P|6","Falcone|Lecce|P|4","Bremer|Juventus|D|26","Mancini|Roma|D|20","Yan Couto|Como|D|20","Hermoso|Roma|D|10","De Winter|Milan|D|6","Idzes|Sassuolo|D|3","Valeri|Parma|D|3","Jimenez A|Fiorentina|D|1","Nico Paz|Como|C|76","Zaniolo|Udinese|C|32","Ekkelenkamp|Udinese|C|19","Gonzalez N|Juventus|C|10","Politano|Napoli|C|6","Thorstvedt|Sassuolo|C|1","Cancellieri|Lazio|C|1","Ndour|Fiorentina|C|1","Malen|Roma|A|204","Bowie|Sassuolo|A|2","Adams A|Venezia|A|1","Varela G|Monza|A|1","Noslin|Lazio|A|1","Nzola|Cagliari|A|1"],
+  "Los Conquistadores":["Meret|Napoli|P|22","Milinkovic-Savic V|Napoli|P|3","Corvi|Parma|P|1","Solet|Udinese|D|25","Kalulu|Juventus|D|22","Gila|Milan|D|20","Carlos Augusto|Inter|D|3","Obrador|Sassuolo|D|1","Stones|Inter|D|1","Leysen|Sassuolo|D|1","Pavard|Inter|D|1","Rabiot|Milan|C|39","Conceicao|Juventus|C|32","Zielinski|Inter|C|16","Kessie|Atalanta|C|10","Taylor|Lazio|C|8","Mbangula|Bologna|C|1","Modric|Milan|C|1","Pasalic|Atalanta|C|1","Kolo Muani|Juventus|A|140","Assane Diao|Como|A|52","Simeone|Torino|A|27","Beto|Fiorentina|A|25","De Ketelaere|Atalanta|A|24","Soule|Roma|A|22"],
+  "Le Aquile Delloratorio":["Maignan|Milan|P|30","Butez|Como|P|9","Sanchez R|Como|P|1","Dimarco|Inter|D|57","Bartesaghi|Milan|D|5","Delprato|Parma|D|5","Vojvoda|Udinese|D|5","Miranda J|Bologna|D|4","Bellanova|Atalanta|D|3","Comuzzo|Torino|D|2","Alex Valle|Como|D|1","Calhanoglu|Inter|C|62","McTominay|Napoli|C|44","McKennie|Juventus|C|15","Bernardeschi|Bologna|C|8","Casadei|Torino|C|4","Vergara|Napoli|C|4","Perrone|Como|C|2","Cristante|Roma|C|1","Woltemade|Juventus|A|69","Krstovic|Atalanta|A|51","Esposito F|Inter|A|35","Pinamonti|Lazio|A|30","Alisson Santos|Napoli|A|20","Castro S|Roma|A|7"],
+  "Thorino":["Mandas|Lazio|P|4","Perri|Torino|P|3","De Gea|Fiorentina|P|2","Bastoni|Inter|D|28","Nuno Tavares|Lazio|D|13","Spinazzola|Napoli|D|12","Ostigard|Genoa|D|7","Balerdi|Roma|D|1","Fortini|Torino|D|1","Mangas|Monza|D|1","Cinquegrano|Sassuolo|D|1","Pulisic|Milan|C|48","Zaccagni|Lazio|C|45","Adzic|Sassuolo|C|8","Diouf A|Inter|C|8","Mandragora|Torino|C|5","Braganca|Torino|C|1","Chukwueze|Milan|C|1","Milla|Como|C|1","Douvikas|Como|A|108","Scamacca|Atalanta|A|96","Davis|Udinese|A|73","Esposito S|Sassuolo|A|13","Adams|Torino|A|7","Yeboah J|Venezia|A|7"],
+  "Trimoni FC":["Martinez J|Inter|P|21","Muric A|Sassuolo|P|3","Provedel|Inter|P|1","Akanji|Inter|D|23","Pavlovic S|Milan|D|20","Kaiki|Como|D|7","Kamara|Udinese|D|7","Buongiorno|Napoli|D|1","Lulli|Roma|D|1","Mina|Cagliari|D|1","Rafa Marin|Napoli|D|1","Baturina|Como|C|70","Rodrigo Mora|Roma|C|46","Samardzic|Atalanta|C|17","Manu Kone|Roma|C|6","Isaksen|Lazio|C|3","Cisse A|Milan|C|2","Cambiaghi|Bologna|C|1","Saelemaekers|Milan|C|1","Martinez L|Inter|A|200","Berardi|Sassuolo|A|52","Cutrone|Monza|A|6","Raspadori|Atalanta|A|6","Bonny|Inter|A|1","Kvernadze|Frosinone|A|1"]
+};
+const MIA='Los Conquistadores';
+/* nomi scritti al contrario nell'export della lega rispetto al file ufficiale */
+const ALIAS={'Ederson J':'Ederson D.S.','Pedro Goncalves':'Goncalves P.','Anguissa':'Zambo Anguissa',
+ 'El Bilal Toure':'Tourè E.','Nico Paz':'Paz N.','Alisson Santos':'Santos A.','Nuno Tavares':'Tavares N.',
+ 'Rafa Marin':'Marin R.','Manu Kone':'Konè M.','Diego Moreira':'Moreira','Yan Couto':'Couto',
+ 'Assane Diao':'Diao','Alex Valle':'Valle','Rodrigo Mora':'Mora','Cisse A':'Cissè A.'};
+/* calendario di lega: 7 giornate che si ripetono uguali fino alla 38a (prima caricata: la 5a) */
+const CAL_DA=5;
+const CAL=[
+ [['ITAS','Los Conquistadores'],['Trimoni FC','AC Chiavo Veronica'],['Atletico ma non troppo','Thorino'],['Deportivo La Cadrega','Le Aquile Delloratorio']],
+ [['Los Conquistadores','Le Aquile Delloratorio'],['Thorino','Deportivo La Cadrega'],['AC Chiavo Veronica','Atletico ma non troppo'],['ITAS','Trimoni FC']],
+ [['Trimoni FC','Los Conquistadores'],['Atletico ma non troppo','ITAS'],['Deportivo La Cadrega','AC Chiavo Veronica'],['Le Aquile Delloratorio','Thorino']],
+ [['Los Conquistadores','Thorino'],['AC Chiavo Veronica','Le Aquile Delloratorio'],['ITAS','Deportivo La Cadrega'],['Trimoni FC','Atletico ma non troppo']],
+ [['Atletico ma non troppo','Los Conquistadores'],['Deportivo La Cadrega','Trimoni FC'],['Le Aquile Delloratorio','ITAS'],['Thorino','AC Chiavo Veronica']],
+ [['Deportivo La Cadrega','Los Conquistadores'],['Le Aquile Delloratorio','Atletico ma non troppo'],['Thorino','Trimoni FC'],['AC Chiavo Veronica','ITAS']],
+ [['Los Conquistadores','AC Chiavo Veronica'],['ITAS','Thorino'],['Trimoni FC','Le Aquile Delloratorio'],['Atletico ma non troppo','Deportivo La Cadrega']],
+];
+/* turno di Serie A: "Casa-Trasferta", modificabile a ogni giornata */
+const TURNO_DEF=`Monza-Sassuolo
+Bologna-Torino
+Udinese-Cagliari
+Roma-Inter
+Venezia-Lazio
+Fiorentina-Napoli
+Frosinone-Como
+Parma-Genoa
+Juventus-Atalanta
+Milan-Lecce`;
+/* classifica di Serie A, serve solo a pesare la difficoltà dell'avversario */
+const CLASS_DEF=`Roma,Inter,Como,Lazio,Cagliari,Milan,Frosinone,Juventus,Sassuolo,Napoli,Atalanta,Lecce,Udinese,Torino,Fiorentina,Bologna,Parma,Monza,Genoa,Venezia`;
+/* modificatore: soglie di media voto e punti, come da impostazioni della lega */
+/* soglie del modificatore come da impostazioni della lega */
+const MOD_SOGLIE=[['< 6',0],['= 6','+1'],['<= 6.25','+2'],['<= 6.5','+3'],['<= 6.75','+4'],['<= 7','+5'],['> 7','+6']];
+const MODULI=['3-4-3','3-5-2','4-3-3','4-4-2','4-5-1','5-3-2','5-4-1'];
+
+function modPunti(mv){
+  const v=Math.round(mv*100)/100;
+  if(v<6) return 0;
+  if(v===6) return 1;
+  if(v<=6.25) return 2;
+  if(v<=6.5) return 3;
+  if(v<=6.75) return 4;
+  if(v<=7) return 5;
+  return 6;
+}
+
+function StagioneData(players){
+  const idx=new Map();
+  players.forEach(p=>{ idx.set(p.key||norm(p.nome)+norm(p.squadra),p); });
+  const squadre={};
+  Object.entries(ROSE).forEach(([team,arr])=>{
+    squadre[team]=arr.map(s=>{
+      const [nome,squadra,ruolo,costo]=s.split('|');
+      const uff=ALIAS[nome]||nome;
+      let st=idx.get(norm(uff)+norm(squadra));
+      if(!st){ for(const [k,v] of idx){ if(k.endsWith(norm(squadra)) && (norm(v.nome).startsWith(norm(uff))||norm(uff).startsWith(norm(v.nome)))){ st=v; break; } } }
+      return {nome,squadra,ruolo,costo:+costo,st:st||null};
+    });
+  });
+  return squadre;
+}
+
+/* ============================== TAB: STAGIONE ============================== */
+function Stagione({players,cfg}){
+  const [gio,setGio]=useState(CAL_DA);
+  const [turnoTxt,setTurnoTxt]=useState(TURNO_DEF);
+  const [classTxt,setClassTxt]=useState(CLASS_DEF);
+  const [modulo,setModulo]=useState('3-4-3');
+  const [vista,setVista]=useState('formazione');
+  const [copiato,setCopiato]=useState('');
+
+  const squadre=useMemo(()=>StagioneData(players),[players]);
+  const mia=squadre[MIA]||[];
+  const senzaDati=mia.filter(p=>!p.st).length;
+
+  const turno=useMemo(()=>{
+    const m={};
+    turnoTxt.split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
+      const [a,b]=r.split('-').map(s=>(s||'').trim());
+      if(a&&b){ m[norm(a)]={avv:b,casa:true}; m[norm(b)]={avv:a,casa:false}; }
+    });
+    return m;
+  },[turnoTxt]);
+
+  const classifica=useMemo(()=>{
+    const m={}; classTxt.split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>m[norm(s)]=i+1);
+    return m;
+  },[classTxt]);
+
+  const sfida=useMemo(()=>{
+    const g=CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length];
+    const p=g.find(x=>x[0]===MIA||x[1]===MIA);
+    return p?{avv:p[0]===MIA?p[1]:p[0],casa:p[0]===MIA}:null;
+  },[gio]);
+
+  /* valutazione: fantamedia di stagione corretta per avversario e campo */
+  const valutati=useMemo(()=>mia.map(p=>{
+    const t=turno[norm(p.squadra)]||null;
+    const pos=t?classifica[norm(t.avv)]||10:10;
+    const st=p.st;
+    const pv=st?(st.pv||0):0, mv=st?(st.mv||0):0, fm=st?(st.fm||0):0;
+    // avversario: +0.30 se ultima in classifica, -0.30 se prima. campo: +0.15 in casa
+    const adj=t?((pos-10.5)/9.5)*0.30+(t.casa?0.15:-0.15):0;
+    const base=p.ruolo==='P'||p.ruolo==='D'?(mv||0):(fm||0);
+    return {...p,t,pos,pv,mv,fm,punteggio:st?base+adj:null,
+            incerto:st?(pv<=1):false, mai:st?pv===0:false};
+  }),[mia,turno,classifica]);
+
+  const [nd,nc,na]=modulo.split('-').map(Number);
+  const scelte=useMemo(()=>{
+    const per=R=>valutati.filter(p=>p.ruolo===R&&p.punteggio!==null&&!p.mai)
+                         .sort((a,b)=>b.punteggio-a.punteggio);
+    const rest=R=>valutati.filter(p=>p.ruolo===R).sort((a,b)=>(b.punteggio??-9)-(a.punteggio??-9));
+    const P=per('P').slice(0,1), D=per('D').slice(0,nd), C=per('C').slice(0,nc), A=per('A').slice(0,na);
+    const dentro=new Set([...P,...D,...C,...A].map(p=>p.nome));
+    return {P,D,C,A,pan:rest('P').concat(rest('D'),rest('C'),rest('A')).filter(p=>!dentro.has(p.nome))};
+  },[valutati,nd,nc,na]);
+
+  const modStima=useMemo(()=>{
+    const q=[...scelte.P,...scelte.D].map(p=>p.mv).filter(v=>v>0);
+    if(q.length<4) return null;
+    const media=q.reduce((a,b)=>a+b,0)/q.length;
+    return {media,punti:modPunti(media)};
+  },[scelte]);
+
+  function testo(){
+    const r=l=>l.map(p=>`  ${p.ruolo} ${p.nome} (${p.squadra}) mv ${p.mv||'-'} fm ${p.fm||'-'} pres ${p.pv} — ${p.t?(p.t.casa?'in casa con ':'in trasferta a ')+p.t.avv:'non in calendario'}`).join('\n');
+    return `LOS CONQUISTADORES — giornata ${gio}\n`+
+      (sfida?`Avversario di lega: ${sfida.avv} (${sfida.casa?'casa':'trasferta'})\n`:'')+
+      `Modulo ${modulo}${modStima?` · modificatore stimato ${modStima.media.toFixed(2)} → ${modStima.punti>=0?'+':''}${modStima.punti}`:''}\n\n`+
+      `TITOLARI\n${r([...scelte.P,...scelte.D,...scelte.C,...scelte.A])}\n\nPANCHINA\n${r(scelte.pan)}\n`;
+  }
+
+  const Riga=({p})=><tr>
+    <td><span className={'tag '+p.ruolo}>{p.ruolo}</span></td>
+    <td><b>{p.nome}</b><div className="hint" style={{margin:0}}>{p.squadra}{p.mai&&' · mai sceso in campo'}{p.incerto&&!p.mai&&' · una sola presenza'}</div></td>
+    <td className="num">{p.pv||'-'}</td>
+    <td className="num">{p.mv?p.mv.toFixed(2):'-'}</td>
+    <td className="num">{p.fm?p.fm.toFixed(2):'-'}</td>
+    <td>{p.t?<span>{p.t.casa?'':'a '}{p.t.avv} {p.pos?<span className="hint">{p.pos}ª</span>:null}</span>:<span className="hint">turno non impostato</span>}</td>
+    <td className="num">{p.punteggio!==null?p.punteggio.toFixed(2):'-'}</td>
+  </tr>;
+
+  return <>
+    <div className="card">
+      <h2>Giornata {gio}</h2>
+      <p className="hint">{sfida?<>In lega incontri <b>{sfida.avv}</b>, {sfida.casa?'in casa':'in trasferta'}. Il calendario di lega è un ciclo di 7 giornate che si ripete uguale fino alla 38ª.</>:'Calendario di lega non disponibile per questa giornata.'}</p>
+      <div className="row">
+        <button className="btn ghost sm" onClick={()=>setGio(g=>Math.max(CAL_DA,g-1))}>‹</button>
+        <input type="number" value={gio} min={CAL_DA} max={38} onChange={e=>setGio(Math.min(38,Math.max(CAL_DA,+e.target.value||CAL_DA)))} style={{width:70}}/>
+        <button className="btn ghost sm" onClick={()=>setGio(g=>Math.min(38,g+1))}>›</button>
+        <span style={{flex:1}}/>
+        {['formazione','rosa','avversari','turno'].map(v=>
+          <button key={v} className={'btn sm '+(vista===v?'':'ghost')} onClick={()=>setVista(v)}>{v}</button>)}
+      </div>
+      {senzaDati>0&&<p className="hint" style={{marginTop:8}}>⚠ {senzaDati} giocatori della tua rosa non hanno statistiche: carica il file ufficiale da <i>Impostazioni</i>.</p>}
+    </div>
+
+    {vista==='formazione'&&<>
+      <div className="card">
+        <h2>Formazione consigliata</h2>
+        <p className="hint">Ordino per fantamedia di stagione, corretta per la forza dell'avversario e per il campo.
+          Portiere e difensori sono ordinati per media voto, perché è quella che conta per il modificatore.
+          È un punto di partenza, non un oracolo: probabili formazioni e infortuni dell'ultimo momento non li conosco.</p>
+        <div className="row" style={{marginBottom:10}}>
+          {MODULI.map(m=><button key={m} className={'btn sm '+(modulo===m?'':'ghost')} onClick={()=>setModulo(m)}>{m}</button>)}
+        </div>
+        {modStima&&<p className="hint">Modificatore stimato sulla media voto di portiere e difensori schierati: <b>{modStima.media.toFixed(2)}</b> → <b>{modStima.punti>=0?'+':''}{modStima.punti}</b> punti. Stima sulle medie di stagione, non sui voti della giornata.</p>}
+        <div className="tw"><table><thead><tr><th></th><th>Giocatore</th><th className="num">Pres</th><th className="num">MV</th><th className="num">FM</th><th>Avversario</th><th className="num">Voto atteso</th></tr></thead>
+          <tbody>{[...scelte.P,...scelte.D,...scelte.C,...scelte.A].map(p=><Riga key={p.nome} p={p}/>)}</tbody></table></div>
+      </div>
+      <div className="card">
+        <h2>Panchina</h2>
+        <div className="tw"><table><tbody>{scelte.pan.map(p=><Riga key={p.nome} p={p}/>)}</tbody></table></div>
+      </div>
+      <div className="card">
+        <h2>Chiedi un parere</h2>
+        <p className="hint">Copia il riepilogo e incollalo in chat: chi lo legge ha davanti rosa, avversari e rendimento senza doverteli chiedere.</p>
+        <div className="row">
+          <button className="btn" onClick={()=>{navigator.clipboard.writeText(testo());setCopiato('copiato');setTimeout(()=>setCopiato(''),2000);}}>Copia riepilogo</button>
+          {copiato&&<span className="hint">{copiato}</span>}
+        </div>
+        <textarea readOnly value={testo()} style={{width:'100%',height:150,marginTop:10,fontFamily:'var(--mono)',fontSize:11.5}}/>
+      </div>
+    </>}
+
+    {vista==='rosa'&&<div className="card">
+      <h2>La mia rosa</h2>
+      <div className="tw"><table><thead><tr><th></th><th>Giocatore</th><th className="num">Pres</th><th className="num">MV</th><th className="num">FM</th><th>Avversario</th><th className="num">Voto atteso</th></tr></thead>
+        <tbody>{valutati.slice().sort((a,b)=>ROLES.indexOf(a.ruolo)-ROLES.indexOf(b.ruolo)||(b.punteggio??-9)-(a.punteggio??-9)).map(p=><Riga key={p.nome} p={p}/>)}</tbody></table></div>
+    </div>}
+
+    {vista==='avversari'&&<div className="card">
+      <h2>{sfida?sfida.avv:'Avversario'}</h2>
+      <p className="hint">Chi può schierarti contro, ordinato per fantamedia.</p>
+      {sfida&&<div className="tw"><table><tbody>
+        {(squadre[sfida.avv]||[]).map(p=>({...p,pv:p.st?.pv||0,mv:p.st?.mv||0,fm:p.st?.fm||0,
+            t:turno[norm(p.squadra)]||null,pos:0,punteggio:null}))
+          .sort((a,b)=>b.fm-a.fm).map(p=><Riga key={p.nome} p={p}/>)}
+      </tbody></table></div>}
+    </div>}
+
+    {vista==='turno'&&<div className="card">
+      <h2>Turno di Serie A</h2>
+      <p className="hint">Una riga per partita, nel formato <b>Casa-Trasferta</b>. Aggiornalo a ogni giornata: la formazione si ricalcola da sola.</p>
+      <textarea value={turnoTxt} onChange={e=>setTurnoTxt(e.target.value)} style={{width:'100%',height:170,fontFamily:'var(--mono)',fontSize:12}}/>
+      <h2 style={{marginTop:14}}>Classifica</h2>
+      <p className="hint">Dalla prima all'ultima, separate da virgola. Serve solo a pesare quanto è difficile l'avversario.</p>
+      <textarea value={classTxt} onChange={e=>setClassTxt(e.target.value)} style={{width:'100%',height:70,fontFamily:'var(--mono)',fontSize:12}}/>
+      <h2 style={{marginTop:14}}>Modificatore</h2>
+      <p className="hint">Le soglie impostate nella lega, sulla media voto di portiere e difensori.</p>
+      <div className="row">{MOD_SOGLIE.map(([s,v])=><span key={s} className="teamchip" style={{minWidth:0}}><b className="num">{v}</b> <span className="hint">{s}</span></span>)}</div>
+    </div>}
   </>;
 }
 
