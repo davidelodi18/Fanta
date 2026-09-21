@@ -172,6 +172,30 @@ function valuta(p,turno,classifica){
 }
 
 /* ===================== PEZZI DI INTERFACCIA ===================== */
+/* valuta un modulo: sceglie i migliori per ruolo e stima i punti totali */
+function valutaModulo(rosa,modulo,modSolo4){
+  const q=modulo.split('-').map(Number);
+  const n={P:1,D:q[0],C:q[1],A:q[2]};
+  const ids={}, scelti=[];
+  ROLES.forEach(R=>{
+    const top=rosa.filter(p=>p.ruolo===R&&p.voto!==null&&p.stato!=='mai'&&!p.fuori)
+                  .sort((a,b)=>b.voto-a.voto).slice(0,n[R]);
+    ids[R]=top.map(p=>p.id);
+    top.forEach(p=>scelti.push(p));
+  });
+  /* punti attesi = fantamedia + la stessa correzione per avversario e campo del voto atteso */
+  const somma=scelti.reduce((t,p)=>{
+    const base=(p.ruolo==='P'||p.ruolo==='D')?p.mv:p.fm;
+    return t+(p.fm||0)+((p.voto||base)-base);
+  },0);
+  const mv=scelti.filter(p=>p.ruolo==='P'||p.ruolo==='D').map(p=>p.mv).filter(v=>v>0);
+  const siApplica=!(modSolo4&&n.D<4)&&mv.length===1+n.D;
+  const media=mv.length?mv.reduce((a,b)=>a+b,0)/mv.length:0;
+  const mod=siApplica?modPunti(media):0;
+  return {modulo:modulo,ids:ids,somma:somma,mod:mod,media:media,siApplica:siApplica,
+          mancano:11-scelti.length,tot:somma+mod};
+}
+
 /* ===================== INTERFACCIA (senza JSX, verificabile) ===================== */
 const h=React.createElement;
 const D=(cls,props,...kids)=>h('div',Object.assign({className:cls},props||{}),...kids);
@@ -219,6 +243,7 @@ function App(){
   const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));
   const [risul,setRisul]=useState(()=>mem.get('risul',{}));
   const [fuori,setFuori]=useState(()=>mem.get('fuori',[]));
+  const [modSolo4,setModSolo4]=useState(()=>mem.get('modSolo4',true));
   const [apri,setApri]=useState(null);
   const [msg,setMsg]=useState('');
 
@@ -229,6 +254,7 @@ function App(){
   useEffect(()=>{mem.set('scelta',scelta)},[scelta]);
   useEffect(()=>{mem.set('risul',risul)},[risul]);
   useEffect(()=>{mem.set('fuori',fuori)},[fuori]);
+  useEffect(()=>{mem.set('modSolo4',modSolo4)},[modSolo4]);
 
   const squadre=useSquadre(stats);
 
@@ -262,14 +288,10 @@ function App(){
   const parti=modulo.split('-').map(Number);
   const quanti={P:1,D:parti[0],C:parti[1],A:parti[2]};
 
-  const consiglio=useMemo(()=>{
-    const out={};
-    ROLES.forEach(R=>{
-      out[R]=rosa.filter(p=>p.ruolo===R&&p.voto!==null&&p.stato!=='mai'&&!p.fuori)
-                 .sort((a,b)=>b.voto-a.voto).slice(0,quanti[R]).map(p=>p.id);
-    });
-    return out;
-  },[rosa,modulo]);
+  const consiglio=useMemo(()=>valutaModulo(rosa,modulo,modSolo4).ids,[rosa,modulo,modSolo4]);
+  const moduli=useMemo(()=>MODULI.map(m=>valutaModulo(rosa,m,modSolo4))
+    .sort((a,b)=>b.tot-a.tot),[rosa,modSolo4]);
+  const migliore=moduli[0];
 
   const mieScelte=scelta[gio]||null;
 
@@ -298,9 +320,10 @@ function App(){
   const modif=useMemo(()=>{
     const q=schierati.P.concat(schierati.D).filter(Boolean).map(p=>p.mv).filter(v=>v>0);
     if(q.length<1+quanti.D) return null;
+    if(modSolo4&&quanti.D<4) return {media:0,punti:0,no:true};
     const m=q.reduce((a,b)=>a+b,0)/q.length;
     return {media:m,punti:modPunti(m)};
-  },[schierati,modulo]);
+  },[schierati,modulo,modSolo4]);
 
   const somma=useMemo(()=>{
     let t=0; ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)t+=p.fm||0;}));
@@ -327,6 +350,11 @@ function App(){
   },[risul]);
 
   function auto(){ setScelta(s=>Object.assign({},s,{[gio]:consiglio})); setMsg('Formazione compilata con i consigli.'); }
+  function usaMigliore(){
+    setModulo(migliore.modulo);
+    setScelta(s=>Object.assign({},s,{[gio]:migliore.ids}));
+    setMsg('Schierato il '+migliore.modulo+': '+migliore.tot.toFixed(1)+' punti attesi.');
+  }
   function svuota(){ setScelta(s=>{const n=Object.assign({},s); delete n[gio]; return n;}); }
 
   function metti(R,k,id){
@@ -393,13 +421,26 @@ function App(){
 
   /* ---------- campo ---------- */
   const paginaCampo=[
+    D('card',{key:'best',style:{borderColor:migliore.modulo===modulo?'var(--line)':'var(--acc)'}},
+      D('kv',null,S('',null,'Modulo migliore'),
+        h('b',{className:'num'},migliore.modulo+' · '+migliore.tot.toFixed(1)+' pt')),
+      migliore.modulo!==modulo?h('button',{className:'btn',onClick:usaMigliore},
+        'Usa il '+migliore.modulo+' e compila'):
+        h('p',{className:'hint'},'Stai già usando il modulo che rende di più.'),
+      h('details',{style:{marginTop:8}},
+        h('summary',{className:'hint',style:{cursor:'pointer'}},'Confronta tutti i moduli'),
+        moduli.map(r=>D('kv',{key:r.modulo,style:{fontWeight:r.modulo===modulo?700:400}},
+          S('',null,r.modulo+(r.mancano?' · ne mancano '+r.mancano:'')),
+          S('num',{style:{color:'var(--muted)',fontSize:12}},
+            r.somma.toFixed(1)+(r.siApplica?' + '+r.mod+' mod':' · mod no')+' = '),
+          h('b',{className:'num'},r.tot.toFixed(1)))))),
     D('mods',{key:'m'}, MODULI.map(m=>h('button',{key:m,className:'chip','data-on':modulo===m?'1':'0',
       onClick:()=>setModulo(m)},m))),
     h(Campo,{key:'c',schierati:schierati,modulo:modulo,onSlot:(R,k)=>setApri({R:R,k:k})}),
     D('card',{key:'r',style:{marginTop:10}},
       D('kv',null,S('',null,'Somma fantamedie'),h('b',{className:'num'},somma.toFixed(2))),
       D('kv',null,S('',null,'Modificatore difesa'),
-        h('b',{className:'num'},modif?modif.media.toFixed(2)+' → +'+modif.punti:'—')),
+        h('b',{className:'num'},modif?(modif.no?'non si applica':modif.media.toFixed(2)+' → +'+modif.punti):'—')),
       D('kv',null,S('',null,'Formazione'),
         mieScelte?S('',null,'scelta da te'):S('badge',null,'consigliata'))),
     h('button',{key:'b1',className:'btn',onClick:auto},'Compila con i consigli'),
@@ -474,7 +515,10 @@ function App(){
       h('textarea',{rows:4,value:classTxt,onChange:e=>setClassTxt(e.target.value)})),
     D('card',{key:'mo'}, h('h2',null,'Modificatore di difesa'),
       h('p',{className:'hint'},'Le soglie della tua lega, sulla media voto di portiere e difensori schierati.'),
-      MOD_SOGLIE.map(s=>D('kv',{key:s[0]},S('',null,s[0]),h('b',{className:'num'},s[1]))))
+      MOD_SOGLIE.map(s=>D('kv',{key:s[0]},S('',null,s[0]),h('b',{className:'num'},s[1]))),
+      D('kv',{style:{marginTop:8}},S('',null,'Vale solo con almeno 4 difensori'),
+        h('button',{className:'chip','data-on':modSolo4?'1':'0',onClick:()=>setModSolo4(v=>!v)},modSolo4?'sì':'no')),
+      h('p',{className:'hint'},'È la regola più comune. Controlla sul regolamento della lega: cambia quale modulo conviene.'))
   ];
 
   /* ---------- foglio di scelta ---------- */
