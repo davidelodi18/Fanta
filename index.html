@@ -105,6 +105,7 @@ label.file input{display:none}
 <div id="root"></div>
 <script>
 
+
 const {useState,useMemo,useEffect,useRef}=React;
 
 /* ===================== DATI DELLA LEGA ===================== */
@@ -172,6 +173,85 @@ function valuta(p,turno,classifica){
 }
 
 /* ===================== PEZZI DI INTERFACCIA ===================== */
+/* ===================== STATO UNICO E SALVATAGGI ===================== */
+/* tutto quello che inserisci vive in un solo oggetto: si salva sul telefono e nel cloud */
+const CODICE_DEF='stagione-los-conquistadores';
+
+function dbVuoto(){
+  return {ts:0, chiuse:{}, scelta:{}, moduloG:{}, risul:{}, fuori:[],
+    turno:TURNO_DEF, classe:CLASS_DEF, modSolo4:true, stats:null,
+    moduloDef:'4-3-3', codice:CODICE_DEF};
+}
+
+/* recupera i dati salvati dalle versioni precedenti dell'app, se ci sono */
+function migra(get){
+  const d=dbVuoto();
+  const vecchi={scelta:get('scelta'),risul:get('risul'),fuori:get('fuori'),turno:get('turno'),
+    classe:get('class'),modSolo4:get('modSolo4'),stats:get('stats'),moduloDef:get('modulo')};
+  Object.keys(vecchi).forEach(k=>{ if(vecchi[k]!==null&&vecchi[k]!==undefined) d[k]=vecchi[k]; });
+  return d;
+}
+
+/* completa un oggetto letto da fuori con i campi che mancano */
+function completa(x){
+  const d=dbVuoto();
+  if(!x||typeof x!=='object') return d;
+  Object.keys(d).forEach(k=>{ if(x[k]!==undefined&&x[k]!==null) d[k]=x[k]; });
+  return d;
+}
+
+/* la prima giornata ancora aperta: è lì che l'app si apre */
+function primaAperta(chiuse){
+  for(let g=CAL_DA;g<=38;g++) if(!chiuse[g]) return g;
+  return 38;
+}
+
+/* fotografia di un giocatore schierato, così la giornata chiusa non cambia più */
+function foto(p){
+  if(!p) return null;
+  return {id:p.id,nome:p.nome,ruolo:p.ruolo,sq:p.sq,
+    t:p.t?{avv:p.t.avv,casa:p.t.casa}:null,voto:p.voto,
+    fm:p.fm,mv:p.mv,pv:p.pv,stato:p.stato,fuori:false};
+}
+
+const memRaw={
+  get(k){try{const v=localStorage.getItem('fanta_'+k);return v?JSON.parse(v):null;}catch(e){return null;}},
+  set(k,v){try{localStorage.setItem('fanta_'+k,JSON.stringify(v));return true;}catch(e){return false;}}
+};
+
+/* ---------- cloud: stesso database Firebase dell'app dell'asta ---------- */
+const FB={
+  url:'https://fanta-asta-23598-default-rtdb.europe-west1.firebasedatabase.app',
+  apiKey:'AIzaSyDE2-8vuvt5nzs7a4IY3URa0BKezp9HmwA',
+  path:'asta'
+};
+let TOK={t:null,exp:0,provato:false};
+async function token(){
+  if(TOK.t&&Date.now()<TOK.exp) return TOK.t;
+  if(TOK.provato&&!TOK.t) return null;
+  TOK.provato=true;
+  try{
+    const r=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key='+FB.apiKey,
+      {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({returnSecureToken:true})});
+    const d=await r.json();
+    if(d.idToken){ TOK={t:d.idToken,exp:Date.now()+50*60*1000,provato:true}; return d.idToken; }
+  }catch(e){}
+  return null;
+}
+async function nodo(codice){
+  const t=await token();
+  return FB.url+'/'+FB.path+'/'+encodeURIComponent(codice)+'.json'+(t?'?auth='+t:'');
+}
+async function cloudSalva(codice,dati){
+  const r=await fetch(await nodo(codice),{method:'PUT',body:JSON.stringify(dati)});
+  if(!r.ok) throw new Error(r.status===401||r.status===403?'il database non accetta scritture':'errore '+r.status);
+}
+async function cloudLeggi(codice){
+  const r=await fetch(await nodo(codice));
+  if(!r.ok) throw new Error(r.status===401||r.status===403?'il database non accetta letture':'errore '+r.status);
+  return await r.json();
+}
+
 /* valuta un modulo: sceglie i migliori per ruolo e stima i punti totali */
 function valutaModulo(rosa,modulo,modSolo4){
   const q=modulo.split('-').map(Number);
@@ -207,7 +287,7 @@ function Riga(props){
   const sotto=p.sq+(p.t?' · '+(p.t.casa?'':'a ')+p.t.avv:' · turno non impostato')
     +(p.stato==='mai'?' · mai in campo':'')+(p.stato==='poche'?' · 1 presenza':'')
     +(p.fuori?' · INDISPONIBILE':'');
-  return D('pl',{onClick:props.onClick,key:props.rkey,style:p.fuori?{opacity:.5}:null},
+  return D('pl',{onClick:props.onClick,style:p.fuori?{opacity:.5}:null},
     S('tag '+p.ruolo,null,p.ruolo),
     D('mid',null, D('n',null,p.nome), D('s',null,sotto)),
     D('r',null, props.dx||[h('b',{key:'b'},p.voto?fmt(p.voto):'—'),h('span',{key:'s'},'atteso')])
@@ -217,12 +297,13 @@ function Riga(props){
 function Campo(props){
   const parti=props.modulo.split('-').map(Number);
   const linee=[['A',parti[2]],['C',parti[1]],['D',parti[0]],['P',1]];
-  return D('pitch',null, linee.map(function(l){
+  return D('pitch',props.bloccato?{style:{filter:'saturate(.55)'}}:null, linee.map(function(l){
     const R=l[0], n=l[1];
     const slot=[];
     for(let k=0;k<n;k++){
-      const p=props.schierati[R][k];
-      slot.push(h('button',{className:'slot',key:R+k,onClick:()=>props.onSlot(R,k)},
+      const p=(props.schierati[R]||[])[k];
+      slot.push(h('button',{className:'slot',key:R+k,
+        onClick:()=>{ if(!props.bloccato) props.onSlot(R,k); }},
         D('shirt'+(p?'':' void'),null,
           p?S('fm',null,p.voto?fmt(p.voto):'—'):S('op',null,'vuoto'),
           p?S('op',null,(p.t?(p.t.casa?'':'@')+p.t.avv.slice(0,7):'—')):null,
@@ -234,68 +315,105 @@ function Campo(props){
 }
 
 function App(){
+  /* ---------- stato: un solo oggetto, salvato in locale e nel cloud ---------- */
+  const [db,setDb]=useState(()=>{
+    const salvato=memRaw.get('db');
+    return salvato?completa(salvato):migra(k=>memRaw.get(k));
+  });
+  const [gio,setGio]=useState(()=>primaAperta((memRaw.get('db')||{}).chiuse||{}));
   const [vista,setVista]=useState('campo');
-  const [gio,setGio]=useState(()=>mem.get('gio',CAL_DA));
-  const [modulo,setModulo]=useState(()=>mem.get('modulo','3-4-3'));
-  const [turnoTxt,setTurnoTxt]=useState(()=>mem.get('turno',TURNO_DEF));
-  const [classTxt,setClassTxt]=useState(()=>mem.get('class',CLASS_DEF));
-  const [stats,setStats]=useState(()=>mem.get('stats',null));
-  const [scelta,setScelta]=useState(()=>mem.get('scelta',{}));
-  const [risul,setRisul]=useState(()=>mem.get('risul',{}));
-  const [fuori,setFuori]=useState(()=>mem.get('fuori',[]));
-  const [modSolo4,setModSolo4]=useState(()=>mem.get('modSolo4',true));
   const [apri,setApri]=useState(null);
   const [msg,setMsg]=useState('');
+  const [cloudSt,setCloudSt]=useState('');
+  const [localeOk,setLocaleOk]=useState(true);
+  const daCloud=useRef(false);
+  const timer=useRef(null);
+  const pronto=useRef(false);     /* niente invii al cloud finché non ho letto cosa c'è già */
+  const ultimo=useRef(null);
 
-  useEffect(()=>{mem.set('gio',gio)},[gio]);
-  useEffect(()=>{mem.set('modulo',modulo)},[modulo]);
-  useEffect(()=>{mem.set('turno',turnoTxt)},[turnoTxt]);
-  useEffect(()=>{mem.set('class',classTxt)},[classTxt]);
-  useEffect(()=>{mem.set('scelta',scelta)},[scelta]);
-  useEffect(()=>{mem.set('risul',risul)},[risul]);
-  useEffect(()=>{mem.set('fuori',fuori)},[fuori]);
-  useEffect(()=>{mem.set('modSolo4',modSolo4)},[modSolo4]);
+  const upd=fn=>setDb(d=>{
+    const n=JSON.parse(JSON.stringify(d));
+    const r=fn(n)||n; r.ts=Date.now(); return r;
+  });
 
-  const squadre=useSquadre(stats);
+  /* salvataggio locale immediato, cloud dopo un attimo di quiete */
+  function inviaCloud(dati){
+    setCloudSt('salvataggio…');
+    cloudSalva(dati.codice,{ts:dati.ts,json:JSON.stringify(dati)})
+      .then(()=>setCloudSt('salvato alle '+new Date().toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'})))
+      .catch(e=>setCloudSt('non salvato: '+e.message));
+  }
+  useEffect(()=>{
+    ultimo.current=db;
+    setLocaleOk(memRaw.set('db',db));
+    if(!pronto.current) return;
+    if(daCloud.current){ daCloud.current=false; return; }
+    if(!db.ts) return;
+    clearTimeout(timer.current);
+    timer.current=setTimeout(()=>inviaCloud(ultimo.current),1500);
+  },[db]);
 
+  /* all'avvio: se nel cloud c'è una versione più recente, la prendo */
+  useEffect(()=>{
+    setCloudSt('controllo il cloud…');
+    cloudLeggi(db.codice).then(remoto=>{
+      let dati=null;
+      try{ dati=remoto&&remoto.json?JSON.parse(remoto.json):null; }catch(e){ dati=null; }
+      const locale=ultimo.current||db;
+      if(dati&&dati.ts&&dati.ts>(locale.ts||0)){
+        const r=completa(dati);
+        daCloud.current=true; setDb(r); setGio(primaAperta(r.chiuse));
+        setCloudSt('dati recuperati dal cloud');
+        pronto.current=true;
+      } else {
+        pronto.current=true;
+        if(locale.ts&&(!dati||locale.ts>(dati.ts||0))) inviaCloud(locale);
+        else setCloudSt('allineato col cloud');
+      }
+    }).catch(e=>{ pronto.current=true; setCloudSt('cloud non raggiungibile: '+e.message); });
+  },[]);
+
+  /* ---------- derivati ---------- */
+  const chiusa=db.chiuse[gio]||null;
+  const modulo=chiusa?chiusa.modulo:(db.moduloG[gio]||db.moduloDef||'4-3-3');
+  const setModulo=m=>upd(d=>{d.moduloG[gio]=m; d.moduloDef=m;});
+
+  const squadre=useSquadre(db.stats);
   const turno=useMemo(()=>{
     const m={};
-    turnoTxt.split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
-      const parti=r.split('-').map(x=>(x||'').trim());
-      if(parti[0]&&parti[1]){m[norm(parti[0])]={avv:parti[1],casa:true};m[norm(parti[1])]={avv:parti[0],casa:false};}
+    (db.turno||'').split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
+      const x=r.split('-').map(v=>(v||'').trim());
+      if(x[0]&&x[1]){m[norm(x[0])]={avv:x[1],casa:true};m[norm(x[1])]={avv:x[0],casa:false};}
     });
     return m;
-  },[turnoTxt]);
-
+  },[db.turno]);
   const classifica=useMemo(()=>{
-    const m={};
-    classTxt.split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>{m[norm(s)]=i+1;});
+    const m={}; (db.classe||'').split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>{m[norm(s)]=i+1;});
     return m;
-  },[classTxt]);
+  },[db.classe]);
 
-  const fuoriSet=useMemo(()=>new Set(fuori),[fuori]);
-  const segna=id=>setFuori(f=>f.indexOf(id)>=0?f.filter(x=>x!==id):f.concat([id]));
+  const fuoriSet=useMemo(()=>new Set(db.fuori),[db.fuori]);
+  const segna=id=>upd(d=>{d.fuori=d.fuori.indexOf(id)>=0?d.fuori.filter(x=>x!==id):d.fuori.concat([id]);});
   const rosa=useMemo(()=>(squadre[MIA]||[]).map(p=>{
     const v=valuta(p,turno,classifica); v.fuori=fuoriSet.has(v.id); return v;
   }),[squadre,turno,classifica,fuoriSet]);
 
-  const turnoLega=useMemo(()=>CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length],[gio]);
-  const sfida=useMemo(()=>{
+  const turnoLega=CAL[((gio-CAL_DA)%CAL.length+CAL.length)%CAL.length];
+  const sfida=(()=>{
     const m=turnoLega.find(x=>x[0]===MIA||x[1]===MIA);
-    return m?{avv:m[0]===MIA?m[1]:m[0],casa:m[0]===MIA}:null;
-  },[turnoLega]);
+    return m?{avv:m[0]===MIA?m[1]:m[0],casa:m[0]===MIA,idx:turnoLega.indexOf(m)}:null;
+  })();
 
   const parti=modulo.split('-').map(Number);
   const quanti={P:1,D:parti[0],C:parti[1],A:parti[2]};
 
-  const consiglio=useMemo(()=>valutaModulo(rosa,modulo,modSolo4).ids,[rosa,modulo,modSolo4]);
-  const moduli=useMemo(()=>MODULI.map(m=>valutaModulo(rosa,m,modSolo4))
-    .sort((a,b)=>b.tot-a.tot),[rosa,modSolo4]);
+  const consiglio=useMemo(()=>valutaModulo(rosa,modulo,db.modSolo4).ids,[rosa,modulo,db.modSolo4]);
+  const moduli=useMemo(()=>MODULI.map(m=>valutaModulo(rosa,m,db.modSolo4)).sort((a,b)=>b.tot-a.tot),[rosa,db.modSolo4]);
   const migliore=moduli[0];
 
-  const mieScelte=scelta[gio]||null;
-
+  const mieScelte=db.scelta[gio]||null;
   const schierati=useMemo(()=>{
+    if(chiusa) return chiusa.xi;
     const src=mieScelte||consiglio, out={};
     ROLES.forEach(R=>{
       const arr=[];
@@ -306,35 +424,33 @@ function App(){
       out[R]=arr;
     });
     return out;
-  },[mieScelte,consiglio,rosa,modulo]);
+  },[chiusa,mieScelte,consiglio,rosa,modulo]);
 
   const dentro=useMemo(()=>{
     const s=new Set();
-    ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)s.add(p.id);}));
+    ROLES.forEach(R=>(schierati[R]||[]).forEach(p=>{if(p)s.add(p.id);}));
     return s;
   },[schierati]);
+  const panchina=chiusa?chiusa.panca:rosa.filter(p=>!dentro.has(p.id))
+    .sort((a,b)=>(ROLES.indexOf(a.ruolo)-ROLES.indexOf(b.ruolo))||((b.voto||0)-(a.voto||0)));
 
-  const panchina=useMemo(()=>rosa.filter(p=>!dentro.has(p.id))
-    .sort((a,b)=>(ROLES.indexOf(a.ruolo)-ROLES.indexOf(b.ruolo))||((b.voto||0)-(a.voto||0))),[rosa,dentro]);
-
-  const modif=useMemo(()=>{
+  const modif=(()=>{
+    if(chiusa) return chiusa.modif;
     const q=schierati.P.concat(schierati.D).filter(Boolean).map(p=>p.mv).filter(v=>v>0);
     if(q.length<1+quanti.D) return null;
-    if(modSolo4&&quanti.D<4) return {media:0,punti:0,no:true};
+    if(db.modSolo4&&quanti.D<4) return {no:true};
     const m=q.reduce((a,b)=>a+b,0)/q.length;
     return {media:m,punti:modPunti(m)};
-  },[schierati,modulo,modSolo4]);
-
-  const somma=useMemo(()=>{
-    let t=0; ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)t+=p.fm||0;}));
-    return t;
-  },[schierati]);
+  })();
+  const somma=chiusa?chiusa.somma:(()=>{
+    let t=0; ROLES.forEach(R=>schierati[R].forEach(p=>{if(p)t+=p.fm||0;})); return t;
+  })();
 
   const classificaLega=useMemo(()=>{
     const t={}; SQUADRE.forEach(n=>{t[n]={n:n,pt:0,g:0,v:0,p:0,s:0,ff:0,fs:0};});
-    Object.keys(risul).forEach(g=>{
+    Object.keys(db.risul).forEach(g=>{
       const turni=CAL[((+g-CAL_DA)%CAL.length+CAL.length)%CAL.length];
-      (risul[g]||[]).forEach((r,i)=>{
+      (db.risul[g]||[]).forEach((r,i)=>{
         if(!turni[i]||!r) return;
         const fa=parseFloat(r[0]), fb=parseFloat(r[1]);
         if(isNaN(fa)||isNaN(fb)) return;
@@ -347,26 +463,50 @@ function App(){
       });
     });
     return Object.keys(t).map(k=>t[k]).sort((x,y)=>(y.pt-x.pt)||(y.ff-x.ff)||x.n.localeCompare(y.n));
-  },[risul]);
+  },[db.risul]);
 
-  function auto(){ setScelta(s=>Object.assign({},s,{[gio]:consiglio})); setMsg('Formazione compilata con i consigli.'); }
+  const mioRis=sfida?((db.risul[gio]||[])[sfida.idx]||null):null;
+  const mioRisOk=mioRis&&mioRis[0]!==''&&mioRis[1]!==''&&!isNaN(parseFloat(mioRis[0]))&&!isNaN(parseFloat(mioRis[1]));
+
+  /* ---------- azioni ---------- */
+  function auto(){ upd(d=>{d.scelta[gio]=consiglio;}); setMsg('Formazione compilata con i consigli.'); }
+  function svuota(){ upd(d=>{delete d.scelta[gio];}); }
   function usaMigliore(){
-    setModulo(migliore.modulo);
-    setScelta(s=>Object.assign({},s,{[gio]:migliore.ids}));
+    upd(d=>{d.moduloG[gio]=migliore.modulo; d.moduloDef=migliore.modulo; d.scelta[gio]=migliore.ids;});
     setMsg('Schierato il '+migliore.modulo+': '+migliore.tot.toFixed(1)+' punti attesi.');
   }
-  function svuota(){ setScelta(s=>{const n=Object.assign({},s); delete n[gio]; return n;}); }
-
   function metti(R,k,id){
-    setScelta(s=>{
-      const cur=s[gio]||consiglio, nuovo={};
+    upd(d=>{
+      const cur=d.scelta[gio]||consiglio, nuovo={};
       ROLES.forEach(r=>{nuovo[r]=(cur[r]||[]).map(x=>x===id?null:x);});
       const arr=[];
       for(let i=0;i<quanti[R];i++) arr.push(nuovo[R][i]||null);
       arr[k]=id; nuovo[R]=arr;
-      return Object.assign({},s,{[gio]:nuovo});
+      d.scelta[gio]=nuovo;
     });
     setApri(null);
+  }
+
+  function chiudi(){
+    const xi={};
+    ROLES.forEach(R=>{xi[R]=(schierati[R]||[]).map(foto);});
+    const ids={};
+    ROLES.forEach(R=>{ids[R]=xi[R].map(p=>p?p.id:null);});
+    const snap={modulo:modulo, xi:xi, panca:panchina.map(foto), somma:somma, modif:modif,
+      turno:db.turno, ts:Date.now()};
+    upd(d=>{d.chiuse[gio]=snap; d.scelta[gio]=ids; d.moduloG[gio]=modulo;});
+    const g=gio;
+    setGio(Math.min(38,g+1));
+    setMsg('Giornata '+g+' chiusa'+(mioRisOk?'':' (senza il tuo risultato: puoi riaprirla e aggiungerlo)')
+      +'. Ora sei sulla '+Math.min(38,g+1)+'ª: ricordati di aggiornare le partite di Serie A in Dati.');
+  }
+  function riapri(){
+    upd(d=>{
+      const c=d.chiuse[gio];
+      if(c){ d.moduloG[gio]=c.modulo; const ids={}; ROLES.forEach(R=>{ids[R]=(c.xi[R]||[]).map(p=>p?p.id:null);}); d.scelta[gio]=ids; }
+      delete d.chiuse[gio];
+    });
+    setMsg('Giornata '+gio+' riaperta: correggi quello che serve e richiudila.');
   }
 
   function carica(file){
@@ -381,28 +521,53 @@ function App(){
         if(hi<0){ setMsg('Non trovo la riga di intestazione con "Nome".'); return; }
         const H=rows[hi].map(c=>String(c||'').trim().toLowerCase());
         const col=n=>H.indexOf(n);
-        const out={}; let n=0;
+        const out={}; let n=0, maxPv=0;
         rows.slice(hi+1).forEach(r=>{
           if(!r||!r[col('nome')]) return;
+          const pv=+r[col('pv')]||0; if(pv>maxPv) maxPv=pv;
           out[norm(r[col('nome')])+norm(r[col('squadra')])]={
-            pv:+r[col('pv')]||0, mv:+r[col('mv')]||0, fm:+r[col('fm')]||0,
+            pv:pv, mv:+r[col('mv')]||0, fm:+r[col('fm')]||0,
             gf:+r[col('gf')]||0, ass:+r[col('ass')]||0, amm:+r[col('amm')]||0};
           n++;
         });
-        setStats(out); mem.set('stats',out);
-        setMsg('Aggiornate le statistiche di '+n+' giocatori.');
+        upd(d=>{d.stats=out;});
+        const aperta=!db.chiuse[gio];
+        setMsg('Aggiornate le statistiche di '+n+' giocatori (fino a '+maxPv+' presenze).'
+          +(aperta?' Se la giornata '+gio+' è finita, inserisci il risultato in Lega e chiudila dal Campo.':''));
       }catch(err){ setMsg('Errore nel file: '+err.message); }
     };
     fr.readAsArrayBuffer(file);
   }
 
+  function esporta(){
+    try{
+      const blob=new Blob([JSON.stringify(db)],{type:'application/json'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='fanta-backup-'+new Date().toISOString().slice(0,10)+'.json';
+      document.body.appendChild(a); a.click(); a.remove();
+    }catch(e){ setMsg('Backup non riuscito: '+e.message); }
+  }
+  function importa(file){
+    const fr=new FileReader();
+    fr.onload=e=>{
+      try{
+        const x=completa(JSON.parse(e.target.result));
+        if(!confirm('Sostituisco tutti i dati con quelli del backup?')) return;
+        upd(()=>x); setGio(primaAperta(x.chiuse));
+        setMsg('Backup ripristinato.');
+      }catch(err){ setMsg('Backup non valido: '+err.message); }
+    };
+    fr.readAsText(file);
+  }
+
   function testo(){
     const r=l=>l.filter(Boolean).map(p=>'  '+p.ruolo+' '+p.nome+' ('+p.sq+') mv '+(p.mv||'-')+' fm '+(p.fm||'-')
       +' pres '+p.pv+' — '+(p.t?(p.t.casa?'in casa con ':'in trasferta a ')+p.t.avv:'turno ignoto')).join('\n');
-    const inCampo=[]; ROLES.forEach(R=>schierati[R].forEach(p=>inCampo.push(p)));
-    return 'LOS CONQUISTADORES — giornata '+gio+'\n'
+    const inCampo=[]; ROLES.forEach(R=>(schierati[R]||[]).forEach(p=>inCampo.push(p)));
+    return 'LOS CONQUISTADORES — giornata '+gio+(chiusa?' (chiusa)':'')+'\n'
       +(sfida?'In lega: '+sfida.avv+' ('+(sfida.casa?'casa':'trasferta')+')\n':'')
-      +'Modulo '+modulo+(modif?' · modificatore '+modif.media.toFixed(2)+' → +'+modif.punti:'')
+      +'Modulo '+modulo+(modif&&!modif.no?' · modificatore '+modif.media.toFixed(2)+' → +'+modif.punti:'')
       +'\n\nIN CAMPO\n'+r(inCampo)+'\n\nPANCHINA\n'+r(panchina)+'\n';
   }
 
@@ -412,16 +577,21 @@ function App(){
       D('crest',null,'LC'),
       D('',{style:{flex:1,minWidth:0}},
         D('tname',null,'Los Conquistadores'),
-        D('tsub',null,'LaFiga · 8 squadre · modificatore attivo'))),
+        D('tsub',null,'LaFiga · 8 squadre · modificatore con 4+ difensori'))),
     D('gio',null,
       h('button',{onClick:()=>setGio(g=>Math.max(CAL_DA,g-1))},'‹'),
-      D('mid',null, D('g',null,'giornata '+gio),
+      D('mid',null, D('g',null,'giornata '+gio+(chiusa?' · chiusa':'')),
         D('vs',null, sfida?(sfida.casa?'in casa con ':'in trasferta da ')+sfida.avv:'—')),
       h('button',{onClick:()=>setGio(g=>Math.min(38,g+1))},'›')));
 
   /* ---------- campo ---------- */
+  const risTesto=mioRisOk?(sfida.casa?mioRis[0]+' – '+mioRis[1]:mioRis[1]+' – '+mioRis[0]):null;
   const paginaCampo=[
-    D('card',{key:'best',style:{borderColor:migliore.modulo===modulo?'var(--line)':'var(--acc)'}},
+    chiusa?D('card',{key:'ch',style:{borderColor:'var(--acc)'}},
+      D('kv',null,S('',null,'Giornata chiusa'),h('b',{className:'num'},risTesto?'finita '+risTesto:'risultato non inserito')),
+      h('p',{className:'hint'},'La formazione è congelata così com\'era. Per correggere un errore riaprila.'),
+      h('button',{className:'btn alt',onClick:riapri},'Riapri la giornata '+gio))
+    :D('card',{key:'best',style:{borderColor:migliore.modulo===modulo?'var(--line)':'var(--acc)'}},
       D('kv',null,S('',null,'Modulo migliore'),
         h('b',{className:'num'},migliore.modulo+' · '+migliore.tot.toFixed(1)+' pt')),
       migliore.modulo!==modulo?h('button',{className:'btn',onClick:usaMigliore},
@@ -434,34 +604,38 @@ function App(){
           S('num',{style:{color:'var(--muted)',fontSize:12}},
             r.somma.toFixed(1)+(r.siApplica?' + '+r.mod+' mod':' · mod no')+' = '),
           h('b',{className:'num'},r.tot.toFixed(1)))))),
-    D('mods',{key:'m'}, MODULI.map(m=>h('button',{key:m,className:'chip','data-on':modulo===m?'1':'0',
+    chiusa?null:D('mods',{key:'m'}, MODULI.map(m=>h('button',{key:m,className:'chip','data-on':modulo===m?'1':'0',
       onClick:()=>setModulo(m)},m))),
-    h(Campo,{key:'c',schierati:schierati,modulo:modulo,onSlot:(R,k)=>setApri({R:R,k:k})}),
+    h(Campo,{key:'c',schierati:schierati,modulo:modulo,bloccato:!!chiusa,onSlot:(R,k)=>setApri({R:R,k:k})}),
     D('card',{key:'r',style:{marginTop:10}},
-      D('kv',null,S('',null,'Somma fantamedie'),h('b',{className:'num'},somma.toFixed(2))),
+      D('kv',null,S('',null,'Somma fantamedie'),h('b',{className:'num'},Number(somma||0).toFixed(2))),
       D('kv',null,S('',null,'Modificatore difesa'),
         h('b',{className:'num'},modif?(modif.no?'non si applica':modif.media.toFixed(2)+' → +'+modif.punti):'—')),
       D('kv',null,S('',null,'Formazione'),
-        mieScelte?S('',null,'scelta da te'):S('badge',null,'consigliata'))),
-    h('button',{key:'b1',className:'btn',onClick:auto},'Compila con i consigli'),
-    mieScelte?h('button',{key:'b2',className:'btn alt',onClick:svuota},'Torna ai consigli'):null,
+        chiusa?S('',null,'congelata'):(mieScelte?S('',null,'scelta da te'):S('badge',null,'consigliata')))),
+    chiusa?null:h('button',{key:'b1',className:'btn alt',onClick:auto},'Compila con i consigli'),
+    (!chiusa&&mieScelte)?h('button',{key:'b2',className:'btn alt',onClick:svuota},'Torna ai consigli'):null,
     h('button',{key:'b3',className:'btn alt',onClick:()=>{
       try{navigator.clipboard.writeText(testo());setMsg('Riepilogo copiato: incollalo in chat per un parere.');}
       catch(e){setMsg('Copia non riuscita.');}}},'Copia riepilogo'),
+    chiusa?null:h('button',{key:'b4',className:'btn',onClick:()=>{
+      if(confirm('Chiudo la giornata '+gio+'? La formazione verrà congelata e passerai alla '+Math.min(38,gio+1)+'ª.'
+        +(mioRisOk?'':'\n\nAttenzione: non hai ancora inserito il tuo risultato in Lega.'))) chiudi();
+    }},'Chiudi la giornata '+gio),
     D('card',{key:'p'}, h('h2',null,'Panchina'),
-      panchina.map(p=>h(Riga,{key:p.id,p:p,onClick:()=>setApri({R:p.ruolo,k:null})}))),
-    h('p',{key:'h',className:'hint',style:{padding:'0 2px 4px'}},
-      'Tocca una maglia per cambiare il giocatore. Il numero è il voto atteso: fantamedia corretta per avversario e campo, media voto per portiere e difensori. Pallino giallo se ha una sola presenza, rosso se non ha mai giocato.')
+      panchina.map(p=>h(Riga,{key:p.id,p:p,onClick:chiusa?null:()=>setApri({R:p.ruolo,k:null})}))),
+    chiusa?null:h('p',{key:'h',className:'hint',style:{padding:'0 2px 4px'}},
+      'Tocca una maglia per cambiare il giocatore. Il numero è il voto atteso: fantamedia corretta per avversario e campo, media voto per portiere e difensori. Pallino giallo con una sola presenza, rosso se non ha mai giocato o è indisponibile.')
   ];
 
   /* ---------- rosa ---------- */
   const paginaRosa=D('card',null, h('h2',null,'La mia rosa'),
-    h('p',{className:'hint'},'Tocca un giocatore per segnarlo indisponibile, infortunato o in panchina. Sparisce dai consigli finché non lo rimetti.'),
+    h('p',{className:'hint'},'Tocca un giocatore per segnarlo indisponibile. Sparisce dai consigli finché non lo rimetti.'),
     ROLES.map(R=>D('',{key:R}, rosa.filter(p=>p.ruolo===R).sort((a,b)=>(b.fm||0)-(a.fm||0))
       .map(p=>h(Riga,{key:p.id,p:p,onClick:()=>segna(p.id),
         dx:[h('b',{key:'b'},fmt(p.fm)),h('span',{key:'s'},p.fuori?'fuori':p.pv+' pres')]})))),
-    fuori.length?h('button',{className:'btn alt',onClick:()=>setFuori([])},
-      'Rimetti tutti disponibili ('+fuori.length+')'):null);
+    db.fuori.length?h('button',{className:'btn alt',onClick:()=>upd(d=>{d.fuori=[];})},
+      'Rimetti tutti disponibili ('+db.fuori.length+')'):null);
 
   /* ---------- lega ---------- */
   const paginaLega=[
@@ -471,25 +645,23 @@ function App(){
         S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(i+1)+'. '+r.n),
         S('num',{style:{width:120,textAlign:'right',color:'var(--muted)',fontSize:12}},
           r.g+' · '+r.v+' '+r.p+' '+r.s+' · '+r.ff.toFixed(0)),
-        S('num',{style:{width:32,textAlign:'right'}},h('b',null,r.pt)))),
-      Object.keys(risul).length?null:h('p',{className:'hint'},
-        'Tutti a zero: la vostra prima giornata è la 5ª. Inserisci i fantapunti qui sotto e la classifica si costruisce.')),
-    D('card',{key:'ri'}, h('h2',null,'Risultati · giornata '+gio),
-      h('p',{className:'hint'},'I fantapunti totali di ogni squadra, modificatore compreso. In grassetto la tua sfida.'),
+        S('num',{style:{width:32,textAlign:'right'}},h('b',null,r.pt))))),
+    D('card',{key:'ri'}, h('h2',null,'Risultati · giornata '+gio+(chiusa?' · chiusa':'')),
+      h('p',{className:'hint'},chiusa?'Giornata chiusa: per modificare i risultati riaprila dal Campo.'
+        :'I fantapunti totali di ogni squadra, modificatore compreso. In grassetto la tua sfida.'),
       turnoLega.map((m,i)=>{
-        const r=(risul[gio]||[])[i]||['',''];
-        const set=(k,v)=>setRisul(o=>{
-          const arr=(o[gio]||[['',''],['',''],['',''],['','']]).map(x=>x.slice());
-          arr[i][k]=v;
-          return Object.assign({},o,{[gio]:arr});
+        const r=(db.risul[gio]||[])[i]||['',''];
+        const set=(k,v)=>upd(d=>{
+          const arr=(d.risul[gio]||[['',''],['',''],['',''],['','']]).map(x=>(x||['','']).slice());
+          arr[i][k]=v; d.risul[gio]=arr;
         });
         const mio=m[0]===MIA||m[1]===MIA;
         return D('',{key:i,style:{display:'flex',alignItems:'center',gap:6,padding:'7px 0',
             borderBottom:'1px solid var(--line)',fontWeight:mio?700:400,fontSize:13}},
           S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m[0]),
-          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[0],
+          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[0],disabled:!!chiusa,
             onChange:e=>set(0,e.target.value),style:{width:62,padding:6,textAlign:'center'}}),
-          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[1],
+          h('input',{type:'number',step:'0.5',inputMode:'decimal',value:r[1],disabled:!!chiusa,
             onChange:e=>set(1,e.target.value),style:{width:62,padding:6,textAlign:'center'}}),
           S('',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',textAlign:'right'}},m[1]));
       })),
@@ -506,24 +678,34 @@ function App(){
       h('label',{className:'file btn alt',style:{marginTop:10}},'Carica il file .xlsx',
         h('input',{type:'file',accept:'.xlsx,.xls',onChange:e=>{
           const f=e.target.files[0]; if(f) carica(f); e.target.value='';}})),
-      h('p',{className:'hint'},stats?'Statistiche aggiornate dal tuo file.':'Al momento uso quelle del 17/09/2026, dopo 4 giornate.')),
+      h('p',{className:'hint'},db.stats?'Statistiche caricate dal tuo file.':'Al momento uso quelle del 17/09/2026, dopo 4 giornate.')),
     D('card',{key:'tu'}, h('h2',null,'Partite di Serie A'),
       h('p',{className:'hint'},'Una riga per partita, formato Casa-Trasferta. Aggiorna a ogni giornata.'),
-      h('textarea',{rows:11,value:turnoTxt,onChange:e=>setTurnoTxt(e.target.value)})),
+      h('textarea',{rows:11,value:db.turno,onChange:e=>{const v=e.target.value;upd(d=>{d.turno=v;});}})),
     D('card',{key:'cs'}, h('h2',null,'Classifica di Serie A'),
       h('p',{className:'hint'},'Dalla prima all\'ultima, separate da virgola. Serve a pesare la difficoltà dell\'avversario.'),
-      h('textarea',{rows:4,value:classTxt,onChange:e=>setClassTxt(e.target.value)})),
+      h('textarea',{rows:4,value:db.classe,onChange:e=>{const v=e.target.value;upd(d=>{d.classe=v;});}})),
     D('card',{key:'mo'}, h('h2',null,'Modificatore di difesa'),
       h('p',{className:'hint'},'Le soglie della tua lega, sulla media voto di portiere e difensori schierati.'),
       MOD_SOGLIE.map(s=>D('kv',{key:s[0]},S('',null,s[0]),h('b',{className:'num'},s[1]))),
       D('kv',{style:{marginTop:8}},S('',null,'Vale solo con almeno 4 difensori'),
-        h('button',{className:'chip','data-on':modSolo4?'1':'0',onClick:()=>setModSolo4(v=>!v)},modSolo4?'sì':'no')),
-      h('p',{className:'hint'},'È la regola più comune. Controlla sul regolamento della lega: cambia quale modulo conviene.'))
+        h('button',{className:'chip','data-on':db.modSolo4?'1':'0',onClick:()=>upd(d=>{d.modSolo4=!d.modSolo4;})},db.modSolo4?'sì':'no'))),
+    D('card',{key:'sv'}, h('h2',null,'Salvataggio'),
+      h('p',{className:'hint'},'Tutto viene salvato sul telefono e nel cloud, così non perdi niente anche se il browser cancella i dati.'),
+      D('kv',null,S('',null,'Telefono'),S('',{style:{color:localeOk?'var(--acc)':'var(--bad)'}},localeOk?'ok':'il browser non salva')),
+      D('kv',null,S('',null,'Cloud'),S('',{style:{fontSize:12.5,textAlign:'right',
+        color:/non |errore/.test(cloudSt)?'var(--bad)':'var(--muted)'}},cloudSt||'—')),
+      D('kv',null,S('',null,'Codice'),S('num',{style:{fontSize:12}},db.codice)),
+      h('button',{className:'btn alt',onClick:esporta},'Scarica un backup'),
+      h('label',{className:'file btn alt'},'Ripristina da backup',
+        h('input',{type:'file',accept:'.json,application/json',onChange:e=>{
+          const f=e.target.files[0]; if(f) importa(f); e.target.value='';}})),
+      h('p',{className:'hint'},'Sull\'altro telefono o computer, se il codice è lo stesso, i dati arrivano da soli all\'apertura.'))
   ];
 
   /* ---------- foglio di scelta ---------- */
   const nomeRuolo={P:'portiere',D:'difensore',C:'centrocampista',A:'attaccante'};
-  const foglio=apri?D('mask',{onClick:()=>setApri(null)},
+  const foglio=(apri&&!chiusa)?D('mask',{onClick:()=>setApri(null)},
     D('sheet',{onClick:e=>e.stopPropagation()},
       D('grab'),
       h('h2',{style:{fontSize:15}},'Scegli un '+nomeRuolo[apri.R]),
