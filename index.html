@@ -134,7 +134,9 @@ Frosinone-Como
 Parma-Genoa
 Juventus-Atalanta
 Milan-Lecce`;
-const CLASS_DEF='Roma,Inter,Como,Lazio,Cagliari,Milan,Frosinone,Juventus,Sassuolo,Napoli,Atalanta,Lecce,Udinese,Torino,Fiorentina,Bologna,Parma,Monza,Genoa,Venezia';
+const CLASS_V1='Roma,Inter,Como,Lazio,Cagliari,Milan,Frosinone,Juventus,Sassuolo,Napoli,Atalanta,Lecce,Udinese,Torino,Fiorentina,Bologna,Parma,Monza,Genoa,Venezia';
+/* classifica dopo la 5a giornata (21/09/2026) */
+const CLASS_DEF='Roma,Inter,Lazio,Cagliari,Milan,Frosinone,Juventus,Como,Napoli,Sassuolo,Atalanta,Lecce,Udinese,Torino,Parma,Monza,Fiorentina,Bologna,Genoa,Venezia';
 const MODULI=['3-4-3','3-5-2','4-3-3','4-4-2','4-5-1','5-3-2','5-4-1'];
 const MOD_SOGLIE=[['sotto 6','0'],['esatto 6','+1'],['fino a 6.25','+2'],['fino a 6.5','+3'],['fino a 6.75','+4'],['fino a 7','+5'],['oltre 7','+6']];
 
@@ -173,12 +175,30 @@ function valuta(p,turno,classifica){
 }
 
 /* ===================== PEZZI DI INTERFACCIA ===================== */
+/* calendario ufficiale di Serie A: casa-trasferta, giornata per giornata (fonte: MondoCalcioMagazine, 21/09/2026) */
+const SERIE_A={
+ 5:'Monza-Sassuolo,Bologna-Torino,Udinese-Cagliari,Roma-Inter,Venezia-Lazio,Fiorentina-Napoli,Frosinone-Como,Parma-Genoa,Juventus-Atalanta,Milan-Lecce',
+ 6:'Genoa-Fiorentina,Inter-Parma,Napoli-Frosinone,Como-Roma,Lazio-Monza,Lecce-Bologna,Sassuolo-Milan,Cagliari-Juventus,Atalanta-Venezia,Torino-Udinese',
+ 7:'Frosinone-Sassuolo,Venezia-Napoli,Bologna-Inter,Roma-Genoa,Udinese-Lecce,Fiorentina-Como,Milan-Atalanta,Juventus-Lazio,Monza-Cagliari,Parma-Torino',
+ 8:'Torino-Monza,Cagliari-Bologna,Como-Sassuolo,Napoli-Roma,Lazio-Parma,Inter-Fiorentina,Atalanta-Frosinone,Genoa-Venezia,Lecce-Juventus,Udinese-Milan',
+ 9:'Sassuolo-Lazio,Roma-Cagliari,Torino-Como,Milan-Bologna,Parma-Udinese,Venezia-Inter,Genoa-Juventus,Monza-Napoli,Frosinone-Lecce,Fiorentina-Atalanta',
+ 10:'Bologna-Monza,Udinese-Roma,Milan-Inter,Como-Venezia,Frosinone-Torino,Lazio-Cagliari,Lecce-Genoa,Juventus-Napoli,Sassuolo-Fiorentina,Atalanta-Parma',
+ 11:'Venezia-Udinese,Cagliari-Frosinone,Torino-Lecce,Parma-Bologna,Roma-Sassuolo,Napoli-Lazio,Genoa-Milan,Monza-Atalanta,Inter-Como,Fiorentina-Juventus',
+ 12:'Como-Cagliari,Lazio-Lecce,Parma-Roma,Napoli-Torino,Sassuolo-Genoa,Milan-Frosinone,Bologna-Udinese,Atalanta-Inter,Monza-Fiorentina,Juventus-Venezia',
+ 13:'Roma-Monza,Cagliari-Milan,Como-Juventus,Frosinone-Parma,Inter-Genoa,Lecce-Atalanta,Sassuolo-Napoli,Torino-Lazio,Udinese-Fiorentina,Venezia-Bologna',
+ 14:'Milan-Parma,Bologna-Roma,Fiorentina-Cagliari,Frosinone-Inter,Genoa-Torino,Juventus-Udinese,Lazio-Atalanta,Monza-Como,Napoli-Lecce,Venezia-Sassuolo',
+ 15:'Atalanta-Genoa,Cagliari-Venezia,Como-Bologna,Inter-Torino,Juventus-Monza,Lazio-Roma,Lecce-Sassuolo,Napoli-Milan,Parma-Fiorentina,Udinese-Frosinone',
+ 16:'Milan-Como,Roma-Juventus,Atalanta-Napoli,Fiorentina-Bologna,Frosinone-Lazio,Genoa-Udinese,Lecce-Inter,Sassuolo-Parma,Torino-Cagliari,Venezia-Monza',
+ 17:'Roma-Frosinone,Bologna-Juventus,Cagliari-Genoa,Como-Lecce,Fiorentina-Lazio,Inter-Sassuolo,Monza-Milan,Parma-Napoli,Torino-Venezia,Udinese-Atalanta'
+};
+function turnoUfficiale(g){ const s=SERIE_A[g]; return s?s.split(',').join('\n'):''; }
+
 /* ===================== STATO UNICO E SALVATAGGI ===================== */
 /* tutto quello che inserisci vive in un solo oggetto: si salva sul telefono e nel cloud */
 const CODICE_DEF='stagione-los-conquistadores';
 
 function dbVuoto(){
-  return {ts:0, chiuse:{}, scelta:{}, moduloG:{}, risul:{}, fuori:[],
+  return {ts:0, chiuse:{}, scelta:{}, moduloG:{}, risul:{}, fuori:[], turnoG:{},
     turno:TURNO_DEF, classe:CLASS_DEF, modSolo4:true, stats:null,
     moduloDef:'4-3-3', codice:CODICE_DEF};
 }
@@ -197,7 +217,14 @@ function completa(x){
   const d=dbVuoto();
   if(!x||typeof x!=='object') return d;
   Object.keys(d).forEach(k=>{ if(x[k]!==undefined&&x[k]!==null) d[k]=x[k]; });
+  if(d.classe===CLASS_V1) d.classe=CLASS_DEF;   /* aggiorno la classifica se non l'hai mai toccata */
   return d;
+}
+
+/* le partite di Serie A di una giornata: le tue correzioni, altrimenti il calendario ufficiale */
+function turnoDi(d,g){
+  if(d.turnoG&&typeof d.turnoG[g]==='string') return d.turnoG[g];
+  return turnoUfficiale(g);
 }
 
 /* la prima giornata ancora aperta: è lì che l'app si apre */
@@ -379,14 +406,16 @@ function App(){
   const setModulo=m=>upd(d=>{d.moduloG[gio]=m; d.moduloDef=m;});
 
   const squadre=useSquadre(db.stats);
+  const turnoTxt=turnoDi(db,gio);
+  const turnoMod=!!(db.turnoG&&typeof db.turnoG[gio]==='string');
   const turno=useMemo(()=>{
     const m={};
-    (db.turno||'').split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
+    (turnoTxt||'').split('\n').map(r=>r.trim()).filter(Boolean).forEach(r=>{
       const x=r.split('-').map(v=>(v||'').trim());
       if(x[0]&&x[1]){m[norm(x[0])]={avv:x[1],casa:true};m[norm(x[1])]={avv:x[0],casa:false};}
     });
     return m;
-  },[db.turno]);
+  },[turnoTxt]);
   const classifica=useMemo(()=>{
     const m={}; (db.classe||'').split(',').map(s=>s.trim()).filter(Boolean).forEach((s,i)=>{m[norm(s)]=i+1;});
     return m;
@@ -493,12 +522,12 @@ function App(){
     const ids={};
     ROLES.forEach(R=>{ids[R]=xi[R].map(p=>p?p.id:null);});
     const snap={modulo:modulo, xi:xi, panca:panchina.map(foto), somma:somma, modif:modif,
-      turno:db.turno, ts:Date.now()};
+      turno:turnoTxt, ts:Date.now()};
     upd(d=>{d.chiuse[gio]=snap; d.scelta[gio]=ids; d.moduloG[gio]=modulo;});
     const g=gio;
     setGio(Math.min(38,g+1));
     setMsg('Giornata '+g+' chiusa'+(mioRisOk?'':' (senza il tuo risultato: puoi riaprirla e aggiungerlo)')
-      +'. Ora sei sulla '+Math.min(38,g+1)+'ª: ricordati di aggiornare le partite di Serie A in Dati.');
+      +'. Ora sei sulla '+Math.min(38,g+1)+'ª'+(turnoUfficiale(Math.min(38,g+1))?', con le partite di Serie A già caricate.':': inserisci le partite di Serie A in Dati.'));
   }
   function riapri(){
     upd(d=>{
@@ -679,9 +708,15 @@ function App(){
         h('input',{type:'file',accept:'.xlsx,.xls',onChange:e=>{
           const f=e.target.files[0]; if(f) carica(f); e.target.value='';}})),
       h('p',{className:'hint'},db.stats?'Statistiche caricate dal tuo file.':'Al momento uso quelle del 17/09/2026, dopo 4 giornate.')),
-    D('card',{key:'tu'}, h('h2',null,'Partite di Serie A'),
-      h('p',{className:'hint'},'Una riga per partita, formato Casa-Trasferta. Aggiorna a ogni giornata.'),
-      h('textarea',{rows:11,value:db.turno,onChange:e=>{const v=e.target.value;upd(d=>{d.turno=v;});}})),
+    D('card',{key:'tu'}, h('h2',null,'Partite di Serie A · giornata '+gio),
+      h('p',{className:'hint'},turnoUfficiale(gio)
+        ?(turnoMod?'Hai modificato il calendario ufficiale per questa giornata.'
+                  :'Prese in automatico dal calendario ufficiale. Cambiale solo se una partita viene spostata.')
+        :'Questa giornata non è ancora nel calendario dell\'app: scrivi una riga per partita, formato Casa-Trasferta.'),
+      h('textarea',{rows:11,value:turnoTxt,disabled:!!chiusa,
+        onChange:e=>{const v=e.target.value;upd(d=>{d.turnoG=d.turnoG||{};d.turnoG[gio]=v;});}}),
+      (turnoMod&&turnoUfficiale(gio)&&!chiusa)?h('button',{className:'btn alt',
+        onClick:()=>upd(d=>{delete d.turnoG[gio];})},'Torna al calendario ufficiale'):null),
     D('card',{key:'cs'}, h('h2',null,'Classifica di Serie A'),
       h('p',{className:'hint'},'Dalla prima all\'ultima, separate da virgola. Serve a pesare la difficoltà dell\'avversario.'),
       h('textarea',{rows:4,value:db.classe,onChange:e=>{const v=e.target.value;upd(d=>{d.classe=v;});}})),
